@@ -1,0 +1,60 @@
+name: Build EXE
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 240   # 首次编译 Qt6 需要 1.5-2 小时，第二次起从缓存恢复只需几分钟
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 关键：缓存 vcpkg 编译产物，避免每次都从零编译 Qt6（1.4 小时）
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:/vcpkg/buildtrees
+            C:/vcpkg/packages
+            C:/vcpkg/installed
+            C:/Users/runneradmin/AppData/Local/vcpkg/archives
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('native/vcpkg.json', 'native/CMakeLists.txt') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
+
+      # 缓存 build 输出，让增量编译更快
+      - name: Cache build output
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: build-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ runner.os }}-
+
+      - name: Build EXE
+        run: .\gradlew.bat --no-daemon --parallel --build-cache --stacktrace dll
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenNiloreLoader
+          path: build/dist/OpenNiloreLoader.exe
+          if-no-files-found: error

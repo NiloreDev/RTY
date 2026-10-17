@@ -1,0 +1,2084 @@
+package client.nilore.modules.impl.movement;
+
+import client.nilore.modules.impl.misc.Eagle;
+import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.Tesselator;
+import java.awt.Color;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.CopyOnWriteArrayList;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.gui.screens.ChatScreen;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
+import net.minecraft.network.protocol.game.ServerGamePacketListener;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+import net.minecraft.util.Mth;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.SlabBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
+import org.lwjgl.glfw.GLFW;
+import client.nilore.ClientBase;
+import client.nilore.NiloreClient;
+import client.nilore.event.EventTarget;
+import client.nilore.event.impl.JumpEvent;
+import client.nilore.event.impl.MotionEvent;
+import client.nilore.event.impl.PacketEvent;
+import client.nilore.event.impl.PreMotionEvent;
+import client.nilore.event.impl.Render2DEvent;
+import client.nilore.event.impl.RenderEvent;
+import client.nilore.event.impl.StrafeEvent;
+import client.nilore.event.impl.TickEvent;
+import client.nilore.event.impl.UpdateHeldItemEvent;
+import client.nilore.hud.ModuleListHud;
+import client.nilore.modules.Category;
+import client.nilore.modules.Module;
+import client.nilore.render.FontPresets;
+import client.nilore.render.FontRenderer;
+import client.nilore.render.Paint;
+import client.nilore.render.Rectangle;
+import client.nilore.render.Renderer;
+import client.nilore.render.RoundedRectangle;
+import client.nilore.settings.impl.BooleanSetting;
+import client.nilore.settings.impl.ModeSetting;
+import client.nilore.settings.impl.NumberSetting;
+import client.nilore.utils.animation.SpringAnimation;
+import client.nilore.utils.game.BlockUtil;
+import client.nilore.utils.game.MotionSimulator;
+import client.nilore.utils.game.MovementUtil;
+import client.nilore.utils.game.RayTraceUtil;
+import client.nilore.utils.game.RotationUtil;
+import client.nilore.utils.misc.ChatUtil;
+import client.nilore.utils.misc.PacketUtil;
+import client.nilore.utils.render.RenderUtil;
+import client.nilore.utils.rotation.Rotation;
+import client.nilore.utils.rotation.RotationHandler;
+import client.nilore.utils.rotation.RotationSmoother;
+
+public class Scaffold extends Module {
+    public static Scaffold INSTANCE;
+
+    // ======================================================================
+    // MODE SETTINGS
+    // ======================================================================
+    public final ModeSetting mode = new ModeSetting("Mode", "Normal", "Telly", "KeepY").withDefault("Telly");
+    public final NumberSetting tellyAirTicks = new NumberSetting("AirTicks", 1, 0, 3, 0.1, () -> this.mode.is("Telly"));
+    public final NumberSetting tellyPlaceDelay = new NumberSetting("PlaceDelay", 0, 0, 20, 1, () -> this.mode.is("Telly"));
+    public final BooleanSetting eagle = new BooleanSetting("Eagle", true, () -> this.mode.is("Normal"));
+
+    // ======================================================================
+    // ROTATION SETTINGS
+    // ======================================================================
+    public final BooleanSetting onTickRot = new BooleanSetting("OnTickRot", false);
+    public final NumberSetting rotationSpeed = new NumberSetting("Rotation Speed", 180, 0, 360, 5, () -> !this.syncRotSpeed.getValue());
+    public final BooleanSetting syncRotSpeed = new BooleanSetting("Sync RotSpeed", true);
+    public final NumberSetting turnSpeed = new NumberSetting("Turn Speed", 180, 0, 360, 5, this.syncRotSpeed::getValue);
+    public final NumberSetting returnSpeed = new NumberSetting("Return Speed", 180, 0, 360, 5, this.syncRotSpeed::getValue);
+
+    // ======================================================================
+    // INVENTORY SETTINGS
+    // ======================================================================
+    public final BooleanSetting renderItemSpoof = new BooleanSetting("Render Item Spoof", true);
+    public final ModeSetting switchMode = new ModeSetting("Switch Mode", "Normal", "Hotbar", "Full").withDefault("Hotbar");
+
+    public final BooleanSetting bpsLimit = new BooleanSetting("Limit BPS", false);
+
+    public final NumberSetting bps = new NumberSetting(
+            "BPS",
+            10.00,
+            2.00,
+            10.00,
+            0.01,
+            this.bpsLimit::getValue
+    );
+
+    public final BooleanSetting supportOffhand = new BooleanSetting("Support Offhand", true);
+
+    public final ModeSetting blockSwitchMode = new ModeSetting(
+            "Block Switch",
+            "First",
+            "Most Blocks",
+            "Farthest"
+    ).withDefault("Most Blocks");
+
+    public final BooleanSetting autoRefill = new BooleanSetting("Auto Refill", true);
+    public final BooleanSetting refillFromInventory = new BooleanSetting("Refill From Inventory", true,
+            () -> this.autoRefill.getValue());
+
+    public final BooleanSetting refillBeforeEmpty = new BooleanSetting(
+            "Refill Before Empty",
+            false,
+            () -> this.autoRefill.getValue() && this.refillFromInventory.getValue()
+    );
+
+    public final NumberSetting refillAt = new NumberSetting(
+            "Refill At",
+            4,
+            1,
+            64,
+            1,
+            () -> this.autoRefill.getValue()
+                    && this.refillFromInventory.getValue()
+                    && this.refillBeforeEmpty.getValue()
+    );
+
+    // ======================================================================
+    // CLUTCH SETTINGS
+    // ======================================================================
+    public final BooleanSetting clutch = new BooleanSetting("Clutch", true);
+    public final NumberSetting clutchDepth = new NumberSetting("Clutch Depth", 4, 2, 5, 1, this.clutch::getValue);
+    public final NumberSetting clutchTrigger = new NumberSetting("Clutch Trigger", 0.3, 0.1, 2.0, 0.1);
+    public final NumberSetting clutchSimFrames = new NumberSetting("Clutch Sim Frames", 3, 1, 5, 1);
+    public final NumberSetting scanRadius = new NumberSetting("Scan Radius", 6, 1, 12, 1);
+
+    // ======================================================================
+    // AUTO CONTINENT SETTINGS
+    // ======================================================================
+    public final BooleanSetting autoContinent = new BooleanSetting("Auto Continent", false);
+    public final NumberSetting continentSpeed = new NumberSetting("Continent Speed", 5, 1, 20, 1, () -> this.autoContinent.getValue());
+    public final BooleanSetting continentAutoJump = new BooleanSetting("Continent AutoJump", false, () -> this.autoContinent.getValue());
+    public final NumberSetting continentJumpInterval = new NumberSetting("Continent JumpInterval", 10, 5, 40, 1, () -> this.autoContinent.getValue());
+
+    // ======================================================================
+    // VISUAL SETTINGS
+    // ======================================================================
+    public final ModeSetting swingMode = new ModeSetting("Swing", "Both", "Server").withDefault("Both");
+    public final BooleanSetting blockCounter = new BooleanSetting("Block Counter", true);
+    public final ModeSetting blockCounterStyle = new ModeSetting("Block Counter Style", "Amunix", "Modern", "Naven", "Nitro").withDefault("Modern");
+    public final NumberSetting offsetY = new NumberSetting("Offset Y", 20, 0, 220, 5);
+
+    public final NumberSetting blockCounterOffsetX = new NumberSetting(
+            "Block Counter X", 0, -2000, 2000, 1, this.blockCounter::getValue
+    );
+    public final NumberSetting blockCounterOffsetY = new NumberSetting(
+            "Block Counter Y", 0, -2000, 2000, 1, this.blockCounter::getValue
+    );
+
+    public final BooleanSetting nitroHorizontal = new BooleanSetting(
+            "Nitro Horizontal", false, () -> this.blockCounterStyle.is("Nitro")
+    );
+
+    public final BooleanSetting nitroHideBlockName = new BooleanSetting(
+            "Nitro Hide Block Name", false, () -> this.blockCounterStyle.is("Nitro")
+    );
+
+    public final NumberSetting nitroOffsetY = new NumberSetting(
+            "Nitro Offset",
+            20,
+            -2000,
+            2000,
+            1,
+            () -> this.blockCounterStyle.is("Nitro")
+    );
+
+    public final NumberSetting nitroSize = new NumberSetting(
+            "Nitro Size",
+            1.0,
+            0.5,
+            2.0,
+            0.05,
+            () -> this.blockCounterStyle.is("Nitro")
+    );
+
+    public final NumberSetting nitroOffsetX = new NumberSetting(
+            "Nitro Offset X",
+            0,
+            -2000,
+            2000,
+            1,
+            () -> this.blockCounterStyle.is("Nitro")
+    );
+
+    public final NumberSetting nitroOffsetZ = new NumberSetting(
+            "Nitro Offset Z",
+            0,
+            -220,
+            220,
+            5,
+            () -> this.blockCounterStyle.is("Nitro")
+    );
+
+    public final BooleanSetting nitroCustomAlpha = new BooleanSetting(
+            "Nitro Custom Alpha",
+            false,
+            () -> this.blockCounterStyle.is("Nitro")
+    );
+    public final NumberSetting nitroAlpha = new NumberSetting(
+            "Nitro Alpha",
+            210,
+            0,
+            255,
+            5,
+            () -> this.blockCounterStyle.is("Nitro") && this.nitroCustomAlpha.getValue()
+    );
+
+    public final BooleanSetting mark = new BooleanSetting("Mark", true);
+    public final NumberSetting markRed = new NumberSetting("Mark Red", 255, 0, 255, 1, this.mark::getValue);
+    public final NumberSetting markGreen = new NumberSetting("Mark Green", 55, 0, 255, 1, () -> this.mark.getValue());
+    public final NumberSetting markBlue = new NumberSetting("Mark Blue", 100, 0, 255, 1, this.mark::getValue);
+    public final NumberSetting markAlpha = new NumberSetting("Mark Alpha", 130, 0, 255, 1, () -> this.mark.getValue());
+
+    public final BooleanSetting esp = new BooleanSetting("Esp", true);
+    public final ModeSetting espColor = new ModeSetting(
+            "Esp Color",
+            "White",
+            "Rainbow",
+            "Cyan",
+            "Red",
+            "Green",
+            "Blue"
+    ).withDefault("White");
+
+    public final BooleanSetting print_log = new BooleanSetting("Log", false);
+    public final BooleanSetting debugUpTelly = new BooleanSetting("Debug UpTelly", false);
+
+    // ======================================================================
+    // STATE FIELDS
+    // ======================================================================
+    public Rotation rots = new Rotation();
+    public Rotation lastRots = new Rotation();
+    private final RotationSmoother rotSmoother = new RotationSmoother(new Random());
+    private String aimBranch = "none";
+    public int targetYLevel = -1;
+    public int velocityDelay = 0;
+
+    private int oldSlot;
+    private int altSlot = -1;
+    private boolean slotActive;
+    private int slotActiveTick;
+    private int slotTicks;
+    private PlacementTarget currentPlacement;
+    private int airTicks = 0;
+    private int rotationDelay = 0;
+    private final CopyOnWriteArrayList<CopyOnWriteArrayList<Packet<?>>> packetBatches = new CopyOnWriteArrayList<>();
+    private boolean canBuildNow;
+    private BlockPos lastC05Position;
+    private int tellyPlaceDelayTimer;
+
+    private float continentYaw = 0;
+    private float continentPitch = 0;
+    private int continentJumpCounter = 0;
+
+    private int lastOffhandCount = 0;
+
+    private boolean wasUpTelly = false;
+
+    // ======================================================================
+    // HUD FONTS & ANIMATION
+    // ======================================================================
+    private static final FontRenderer shelfLabelFont = FontPresets.axiformaBold(12);
+    private static final FontRenderer shelfBpsFont = FontPresets.axiformaBold(13);
+    private static final FontRenderer shelfBlocksFont = FontPresets.axiformaBold(13);
+    private final SpringAnimation shelfProgress = new SpringAnimation(300.0f, 1.0f, 25.0f, 1.0f);
+    private int shelfInitialBlocks;
+    private boolean shelfHudInitialized;
+    private long hudLastFrameTime;
+
+    private boolean blockCounterDragging;
+    private boolean blockCounterMouseWasDown;
+    private double blockCounterDragStartMouseX;
+    private double blockCounterDragStartMouseY;
+    private float blockCounterDragStartOffsetX;
+    private float blockCounterDragStartOffsetY;
+
+    // ======================================================================
+    // CONSTRUCTOR
+    // ======================================================================
+    public Scaffold() {
+        super("Scaffold", Category.MOVEMENT);
+        INSTANCE = this;
+    }
+
+    public static boolean isValidStack(ItemStack item) {
+        return false;
+    }
+
+    @Override
+    public String getModuleName() {
+        return "Scaffold";
+    }
+
+    @Override
+    public String getSuffix() {
+        String modeName = mode.getValue();
+        if (modeName == null || modeName.isEmpty()) {
+            return null;
+        }
+        return "[" + modeName + "]";
+    }
+
+    @EventTarget
+    public void onStrafe(StrafeEvent strafeEvent) {
+        if (mc.player == null) return;
+        if (!this.bpsLimit.getValue()) return;
+
+        double limit = this.bps.getValue().doubleValue();
+        if (limit >= 10.0) return;
+
+        double maxSpeed = limit / 20.0;
+
+        if (MovementUtil.getSpeed() > maxSpeed) {
+            strafeEvent.setForward(0.0f);
+            strafeEvent.setStrafe(0.0f);
+        }
+    }
+
+    @Override
+    public void onTick() {
+
+    }
+
+    @Override
+    public String getDisplayName() {
+        String modeName = mode.getValue();
+        if (modeName == null || modeName.isEmpty() || modeName.equals("Normal")) {
+            return "§fScaffold";
+        }
+        return "§fScaffold[" + modeName + "]";
+    }
+
+    // ======================================================================
+    // LIFECYCLE
+    // ======================================================================
+    @Override
+    public void onEnable() {
+        if (mc.player != null) {
+            this.oldSlot = mc.player.getInventory().selected;
+            this.altSlot = this.oldSlot;
+            this.slotActive = false;
+            this.slotActiveTick = 0;
+            this.slotTicks = 0;
+            this.rots.setYawPitch(mc.player.getYRot() - 180.0f, mc.player.getXRot());
+            this.lastRots.setYawPitch(mc.player.yRotO - 180.0f, mc.player.xRotO);
+            this.currentPlacement = null;
+            this.targetYLevel = 10000;
+            this.velocityDelay = 0;
+            this.canBuildNow = true;
+            this.lastC05Position = null;
+            this.packetBatches.clear();
+            this.packetBatches.add(new CopyOnWriteArrayList<>());
+
+            this.continentYaw = mc.player.getYRot();
+            this.continentPitch = mc.player.getXRot();
+            this.continentJumpCounter = 0;
+
+            this.lastOffhandCount = getOffhandBlockCount();
+
+            this.rotSmoother.reset();
+        }
+        this.wasUpTelly = false;
+        this.shelfHudInitialized = mc.player != null;
+        this.shelfInitialBlocks = this.shelfHudInitialized ? this.getBlockSlot() : 0;
+        this.shelfProgress.reset(0.0f);
+        this.hudLastFrameTime = 0L;
+        super.onEnable();
+    }
+
+    @Override
+    public void onDisable() {
+        if (mc != null && mc.player != null) {
+            this.packetBatches.forEach(this::processBatchedPackets);
+            this.packetBatches.clear();
+            boolean jumpDown = InputConstants.isKeyDown(mc.getWindow().getWindow(), mc.options.keyJump.getKey().getValue());
+            boolean shiftDown = InputConstants.isKeyDown(mc.getWindow().getWindow(), mc.options.keyShift.getKey().getValue());
+            mc.options.keyJump.setDown(jumpDown);
+            mc.options.keyShift.setDown(shiftDown);
+            mc.options.keyUse.setDown(false);
+            if (this.slotActive) {
+                mc.player.getInventory().selected = this.altSlot;
+                this.slotActive = false;
+            }
+            this.canBuildNow = true;
+            this.lastC05Position = null;
+            this.rotSmoother.reset();
+            ClientBase.delayPackets.clear();
+        }
+        this.wasUpTelly = false;
+        super.onDisable();
+    }
+
+    private void processBatchedPackets(List<Packet<?>> batch) {
+        batch.forEach(packet -> {
+            batch.remove(packet);
+            PacketUtil.sendQueued((Packet<ServerGamePacketListener>) packet);
+        });
+    }
+
+    // ======================================================================
+    // OFFHAND HELPERS
+    // ======================================================================
+    private int getOffhandBlockCount() {
+        if (mc.player == null) return 0;
+        ItemStack offhand = mc.player.getOffhandItem();
+        if (offhand.getItem() instanceof BlockItem && BlockUtil.isPlaceable(offhand)) {
+            return offhand.getCount();
+        }
+        return 0;
+    }
+
+    private boolean hasOffhandBlock() {
+        if (mc.player == null) return false;
+        if (!this.supportOffhand.getValue()) return false;
+        return BlockUtil.isPlaceable(mc.player.getOffhandItem());
+    }
+
+    private boolean hasMainhandBlock() {
+        if (mc.player == null) return false;
+        return BlockUtil.isPlaceable(mc.player.getMainHandItem());
+    }
+
+    private boolean hasPlaceableBlock() {
+        if (mc.player == null) return false;
+        if (this.supportOffhand.getValue()) {
+            return hasOffhandBlock() || hasMainhandBlock();
+        }
+        return hasMainhandBlock();
+    }
+
+    private InteractionHand getAvailableHand() {
+        if (mc.player == null) return InteractionHand.MAIN_HAND;
+        if (this.supportOffhand.getValue() && hasOffhandBlock()) {
+            return InteractionHand.OFF_HAND;
+        }
+        if (hasMainhandBlock()) {
+            return InteractionHand.MAIN_HAND;
+        }
+        return InteractionHand.MAIN_HAND;
+    }
+
+    private int findPlaceableSlot() {
+        if (mc.player == null) return -1;
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = mc.player.getInventory().getItem(i);
+            if (stack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(stack)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int getSmartBlockSlot() {
+        if (mc.player == null) return -1;
+
+        if (this.blockSwitchMode.is("Farthest")) {
+            int slot = -1;
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = mc.player.getInventory().getItem(i);
+                if (stack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(stack)) {
+                    slot = i;
+                }
+            }
+            return slot;
+        }
+
+        int best = -1;
+        int amount = -1;
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = mc.player.getInventory().getItem(i);
+            if (stack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(stack)) {
+                if (this.blockSwitchMode.is("Most Blocks")) {
+                    if (stack.getCount() > amount) {
+                        amount = stack.getCount();
+                        best = i;
+                    }
+                } else if (best == -1) {
+                    best = i;
+                }
+            }
+        }
+        return best;
+    }
+
+    private boolean autoRefillBlock() {
+        if (mc.player == null
+                || mc.gameMode == null
+                || !this.autoRefill.getValue()
+                || !this.refillFromInventory.getValue()) {
+            return false;
+        }
+
+        int targetHotbarSlot = mc.player.getInventory().selected;
+        if (targetHotbarSlot < 0 || targetHotbarSlot > 8) {
+            return false;
+        }
+
+        ItemStack targetStack = mc.player.getInventory().getItem(targetHotbarSlot);
+
+        boolean targetIsPlaceable = !targetStack.isEmpty()
+                && targetStack.getItem() instanceof BlockItem
+                && BlockUtil.isPlaceable(targetStack);
+
+        if (!targetIsPlaceable) {
+            int smartSlot = this.getSmartBlockSlot();
+
+            if (smartSlot >= 0 && smartSlot < 9) {
+                targetHotbarSlot = smartSlot;
+                targetStack = mc.player.getInventory().getItem(targetHotbarSlot);
+
+                targetIsPlaceable = !targetStack.isEmpty()
+                        && targetStack.getItem() instanceof BlockItem
+                        && BlockUtil.isPlaceable(targetStack);
+            }
+        }
+
+        if (this.refillBeforeEmpty.getValue()) {
+            if (targetIsPlaceable) {
+                int threshold = this.refillAt.getValue().intValue();
+
+                if (targetStack.getCount() > threshold) {
+                    return false;
+                }
+            } else {
+                targetHotbarSlot = mc.player.getInventory().selected;
+
+                if (targetHotbarSlot < 0 || targetHotbarSlot > 8) {
+                    return false;
+                }
+
+                targetStack = ItemStack.EMPTY;
+            }
+        } else {
+            if (this.getSmartBlockSlot() >= 0) {
+                return false;
+            }
+
+            targetHotbarSlot = mc.player.getInventory().selected;
+
+            if (targetHotbarSlot < 0 || targetHotbarSlot > 8) {
+                return false;
+            }
+
+            targetStack = ItemStack.EMPTY;
+        }
+
+        if (!targetStack.isEmpty()) {
+            for (int i = 9; i < 36; i++) {
+                ItemStack inventoryStack = mc.player.getInventory().getItem(i);
+
+                if (inventoryStack.isEmpty()
+                        || !(inventoryStack.getItem() instanceof BlockItem)
+                        || !BlockUtil.isPlaceable(inventoryStack)
+                        || inventoryStack.getItem() != targetStack.getItem()) {
+                    continue;
+                }
+
+                mc.gameMode.handleInventoryMouseClick(
+                        mc.player.inventoryMenu.containerId,
+                        i,
+                        targetHotbarSlot,
+                        net.minecraft.world.inventory.ClickType.SWAP,
+                        mc.player
+                );
+
+                return true;
+            }
+        }
+
+        for (int i = 9; i < 36; i++) {
+            ItemStack inventoryStack = mc.player.getInventory().getItem(i);
+
+            if (inventoryStack.isEmpty()
+                    || !(inventoryStack.getItem() instanceof BlockItem)
+                    || !BlockUtil.isPlaceable(inventoryStack)) {
+                continue;
+            }
+
+            mc.gameMode.handleInventoryMouseClick(
+                    mc.player.inventoryMenu.containerId,
+                    i,
+                    targetHotbarSlot,
+                    net.minecraft.world.inventory.ClickType.SWAP,
+                    mc.player
+            );
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private int getTotalBlockCount() {
+        if (mc.player == null) return 0;
+        int total = 0;
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getItem(i);
+            if (stack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(stack)) {
+                total += stack.getCount();
+            }
+        }
+        ItemStack offhand = mc.player.getOffhandItem();
+        if (offhand.getItem() instanceof BlockItem && BlockUtil.isPlaceable(offhand)) {
+            total += offhand.getCount();
+        }
+        return total;
+    }
+
+    // ======================================================================
+    // EVENTS
+    // ======================================================================
+    @EventTarget
+    public void onPacket(PacketEvent event) {
+        if (mc.player == null || mc.level == null) return;
+        if (event.getPacket() instanceof ClientboundSetEntityMotionPacket motion
+                && motion.getId() == mc.player.getId()) {
+            double length = new Vec3(motion.getXa() / 8000.0, 0.0, motion.getZa() / 8000.0).length();
+            if (length >= 1.5) {
+                this.velocityDelay = 60;
+            }
+        }
+    }
+
+    @EventTarget
+    public void onUpdateHeldItem(UpdateHeldItemEvent event) {
+        if (event.getHand() == InteractionHand.MAIN_HAND && mc.player != null) {
+            if (!this.supportOffhand.getValue()) {
+                boolean silenceActive = this.slotActive && !this.switchMode.is("Normal");
+                if ((silenceActive || this.renderItemSpoof.getValue()) && this.altSlot >= 0) {
+                    event.setItemStack(mc.player.getInventory().getItem(this.altSlot));
+                }
+                return;
+            }
+
+            if (hasOffhandBlock()) {
+                if (this.renderItemSpoof.getValue() && this.altSlot == -1) {
+                    this.altSlot = mc.player.getInventory().selected;
+                }
+                return;
+            }
+
+            boolean silenceActive = this.slotActive && !this.switchMode.is("Normal");
+            if ((silenceActive || this.renderItemSpoof.getValue()) && this.altSlot >= 0) {
+                event.setItemStack(mc.player.getInventory().getItem(this.altSlot));
+            }
+        }
+    }
+
+    @EventTarget
+    public void onJump(JumpEvent event) {
+        if (!this.canBuildNow && this.currentPlacement != null && this.rotationDelay > 0) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventTarget
+    public void onMotion(MotionEvent event) {
+        if (mc.player == null) return;
+
+        if (event.isPost()) {
+            if (mc.player.onGround()) {
+                this.airTicks = 0;
+            } else {
+                this.airTicks++;
+            }
+        }
+    }
+
+    @EventTarget(value = 1)
+    public void onTick(TickEvent event) {
+        if (mc.player == null) return;
+
+        int currentOffhandCount = getOffhandBlockCount();
+        boolean offhandDepleted = this.lastOffhandCount > 0 && currentOffhandCount == 0;
+        this.lastOffhandCount = currentOffhandCount;
+
+        if (this.autoContinent.getValue()) {
+            handleAutoContinent();
+        }
+
+        if (this.slotActive && this.slotActiveTick != this.slotTicks) {
+            mc.player.getInventory().selected = this.altSlot;
+            this.slotActive = false;
+        }
+        this.slotTicks++;
+
+        this.packetBatches.add(new CopyOnWriteArrayList<>());
+        if (this.velocityDelay > 0) this.velocityDelay--;
+        if (mc.player.onGround() && this.velocityDelay <= 30) this.velocityDelay = 0;
+
+        boolean hasOffhand = hasOffhandBlock();
+        if (this.autoRefill.getValue()) {
+            this.autoRefillBlock();
+        }
+        int placeableSlot = getSmartBlockSlot();
+        boolean hasMainhand = placeableSlot != -1;
+        int totalBlocks = getTotalBlockCount();
+        boolean hasAnyBlocks = totalBlocks > 0;
+
+        if (!this.supportOffhand.getValue()) {
+            if (placeableSlot != -1 && placeableSlot != mc.player.getInventory().selected) {
+                if (!this.slotActive) {
+                    this.altSlot = mc.player.getInventory().selected;
+                }
+                mc.player.getInventory().selected = placeableSlot;
+                this.slotActive = true;
+                this.slotActiveTick = this.slotTicks;
+            }
+        } else {
+            if (hasOffhand) {
+                if (this.slotActive) {
+                    this.slotActive = false;
+                }
+                if (this.altSlot == -1) {
+                    this.altSlot = mc.player.getInventory().selected;
+                }
+            } else if (hasAnyBlocks) {
+                boolean shouldSwitch = false;
+                if (hasMainhand) {
+                    if (placeableSlot != mc.player.getInventory().selected) {
+                        shouldSwitch = true;
+                    }
+                }
+                if (shouldSwitch && placeableSlot != -1) {
+                    if (!this.slotActive || offhandDepleted) {
+                        this.altSlot = mc.player.getInventory().selected;
+                    }
+                    mc.player.getInventory().selected = placeableSlot;
+                    this.slotActive = true;
+                    this.slotActiveTick = this.slotTicks;
+                    if (print_log.getValue()) {
+                        ChatUtil.print(true, "§7[Scaffold] Offhand depleted, switched to mainhand slot " + (placeableSlot + 1));
+                    }
+                }
+            } else {
+                if (this.slotActive) {
+                    this.slotActive = false;
+                }
+            }
+        }
+
+        boolean manualJumpHeld = InputConstants.isKeyDown(
+                mc.getWindow().getWindow(),
+                mc.options.keyJump.getKey().getValue()
+        );
+        boolean jumpHeld = manualJumpHeld;
+
+        if (this.targetYLevel == -1
+                || this.targetYLevel > (int) Math.floor(mc.player.getY()) - 1
+                || mc.player.onGround()
+                || !MovementUtil.isMoving()
+                || jumpHeld
+                || this.mode.is("Normal")) {
+            this.targetYLevel = (int) Math.floor(mc.player.getY()) - 1;
+        }
+
+        boolean upTellyNow = this.mode.is("Telly") && this.isUpTelly();
+        if (upTellyNow && !this.wasUpTelly) {
+            if (this.debugUpTelly.getValue()) {
+                ChatUtil.print(true, "§b[Scaffold] §fStart UpTelly §7| targetY=" + this.targetYLevel
+                        + " playerY=" + String.format("%.2f", mc.player.getY())
+                        + " airTicks=" + this.airTicks
+                        + " onGround=" + mc.player.onGround()
+                        + " mode=" + this.mode.getValue());
+            }
+        } else if (!upTellyNow && this.wasUpTelly) {
+            if (this.debugUpTelly.getValue()) {
+                ChatUtil.print(true, "§7[Scaffold] §fEnd UpTelly §7| playerY="
+                        + String.format("%.2f", mc.player.getY())
+                        + " targetY=" + this.targetYLevel);
+            }
+        }
+        this.wasUpTelly = upTellyNow;
+
+        this.applyRotations();
+        if (this.currentPlacement == null) {
+            this.tellyPlaceDelayTimer = 0;
+        } else {
+            this.tellyPlaceDelayTimer++;
+        }
+        this.canBuildNow = true;
+        if (this.clutch.getValue() && mc.player.getDeltaMovement().y < -this.clutchTrigger.getValue().doubleValue()) {
+            MotionSimulator sim = new MotionSimulator(mc.player);
+            int frames = this.clutchSimFrames.getValue().intValue();
+            sim.simulateWithFriction(frames);
+            if (this.currentPlacement != null && this.currentPlacement.position.getY() > sim.y) {
+                this.canBuildNow = false;
+            }
+        }
+        if (mc.player.onGround()) {
+            this.canBuildNow = true;
+        }
+        if (this.currentPlacement == null) {
+            ClientBase.delayPackets.clear();
+        } else if (this.clutch.getValue() && (!this.canBuildNow || this.velocityDelay > 0) && this.rotationDelay <= 8) {
+            if (print_log.getValue()) ChatUtil.print(true, "§6Skipped 1Tick§6.");
+            boolean useC06 = this.onTickRot.getValue() || !this.canBuildNow;
+            if (useC06) {
+                this.aimBranch = "C06-real-cam";
+                this.rots.setYawPitch(mc.player.getYRot(), mc.player.getXRot());
+                RotationHandler.setTargetRotation(this.rots);
+                logLargeDelta(this.rots);
+                this.rotationDelay++;
+            } else {
+                Vec3 targetVec = getFaceCenter(this.currentPlacement.position, this.currentPlacement.facing);
+                Vec3 predictedEye = new Vec3(mc.player.getX() + mc.player.getDeltaMovement().x, mc.player.getY() + mc.player.getEyeHeight() + mc.player.getDeltaMovement().y, mc.player.getZ() + mc.player.getDeltaMovement().z);
+                Rotation rotationToBlock = RotationUtil.rotationFromPoints(targetVec.x, targetVec.y, targetVec.z, predictedEye.x, predictedEye.y, predictedEye.z);
+                Rotation previousTarget = RotationHandler.targetRotation;
+                this.rots.setYawPitch(rotationToBlock.getYaw(), rotationToBlock.getPitch());
+                RotationHandler.setTargetRotation(this.rots);
+                this.rotationDelay++;
+                ClientBase.delayPackets.add(() -> {});
+                ClientBase.delayPackets.add(() -> {
+                    RotationHandler.prevSentRotation.setYawPitch(rotationToBlock.getYaw(), rotationToBlock.getPitch());
+                    float yaw = rotationToBlock.getYaw();
+                    if (yaw > -360.0f && yaw < 360.0f) {
+                        yaw += 720.0f;
+                    }
+                    if (previousTarget != null) {
+                        if (previousTarget.getYaw() != rotationToBlock.getYaw()) {
+                            PacketUtil.sendQueued(new ServerboundMovePlayerPacket.Rot(yaw, rotationToBlock.getPitch(), mc.player.onGround()));
+                        }
+                    } else {
+                        PacketUtil.sendQueued(new ServerboundMovePlayerPacket.Rot(yaw, rotationToBlock.getPitch(), mc.player.onGround()));
+                    }
+                    this.doSnap();
+                    this.onTick(event);
+                });
+            }
+        } else {
+            this.canBuildNow = true;
+            boolean wasInRescue = this.rotationDelay > 0;
+            ClientBase.delayPackets.clear();
+            this.rotationDelay = 0;
+
+            if (wasInRescue) {
+                this.aimBranch = "resume-jitter";
+                Rotation resumeRot = new Rotation(mc.player.getYRot() + rotationJitter(), mc.player.getXRot() + rotationJitter());
+                logLargeDelta(resumeRot);
+                mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
+                        mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                        resumeRot.getYaw(), resumeRot.getPitch(),
+                        mc.player.onGround()
+                ));
+            }
+
+            if (this.onTickRot.getValue()) {
+                this.aimBranch = "C06-real-cam";
+                this.rots.setYawPitch(mc.player.getYRot(), mc.player.getXRot());
+                logLargeDelta(this.rots);
+            } else {
+                this.calculateTargetRotation();
+            }
+
+            if (this.mode.is("Telly")) {
+                if (this.isUpTelly()) {
+                    mc.options.keyJump.setDown(jumpHeld);
+                    mc.options.keySprint.setDown(false);
+                    mc.player.setSprinting(false);
+
+                    if (this.eagle.getValue()) {
+                        mc.options.keyShift.setDown(
+                                mc.player.onGround()
+                                        && Eagle.isOnBlockEdge(0.3f)
+                        );
+                    }
+                } else {
+                    mc.options.keyJump.setDown(
+                            MovementUtil.isMoving() || jumpHeld
+                    );
+
+                    if (this.airTicks < this.tellyAirTicks.getValue().intValue()
+                            && MovementUtil.isMoving()) {
+                        this.rots.setYaw(mc.player.getYRot());
+                        this.lastRots.setYawPitch(
+                                this.rots.getYaw(),
+                                this.rots.getPitch()
+                        );
+                        return;
+                    }
+                }
+            } else if (this.mode.is("KeepY")) {
+                mc.options.keyJump.setDown(MovementUtil.isMoving() || jumpHeld);
+            } else {
+                if (this.eagle.getValue()) {
+                    mc.options.keyShift.setDown(mc.player.onGround() && Eagle.isOnBlockEdge(0.3f));
+                }
+            }
+        }
+        this.lastRots.setYawPitch(this.rots.getYaw(), this.rots.getPitch());
+    }
+
+    public boolean isUpTelly() {
+        if (mc.player == null) return false;
+        return this.targetYLevel > (int) Math.floor(mc.player.getY());
+    }
+
+    // ======================================================================
+    // AUTO CONTINENT
+    // ======================================================================
+    private void handleAutoContinent() {
+        if (mc.player == null) return;
+        if (!hasPlaceableBlock()) return;
+
+        float speed = this.continentSpeed.getValue().floatValue();
+        this.continentYaw += speed;
+        if (this.continentYaw >= 360) {
+            this.continentYaw -= 360;
+        }
+        this.continentPitch = (float) Math.sin(this.continentYaw * 0.02) * 10;
+
+        boolean rotationsActive = false;
+        try {
+            Class<?> rotationsClass = Class.forName("client.nilore.modules.impl.render.Rotations");
+            Object rotationsInstance = rotationsClass.getField("INSTANCE").get(null);
+            java.lang.reflect.Method isEnabledMethod = rotationsClass.getMethod("isEnabled");
+            rotationsActive = (boolean) isEnabledMethod.invoke(rotationsInstance);
+        } catch (Exception ignored) {}
+
+        Rotation targetRot = new Rotation(this.continentYaw, this.continentPitch);
+        RotationHandler.setTargetRotation(targetRot);
+
+        if (!rotationsActive) {
+            mc.player.setYRot(this.continentYaw);
+            mc.player.setXRot(this.continentPitch);
+            ServerboundMovePlayerPacket.Rot rotPacket = new ServerboundMovePlayerPacket.Rot(
+                    this.continentYaw, this.continentPitch, mc.player.onGround());
+            PacketUtil.sendQueued(rotPacket);
+        }
+
+        if (this.continentAutoJump.getValue()) {
+            this.continentJumpCounter++;
+            int interval = this.continentJumpInterval.getValue().intValue();
+            if (this.continentJumpCounter >= interval) {
+                this.continentJumpCounter = 0;
+                if (mc.player.onGround()) {
+                    mc.player.setJumping(true);
+                }
+            }
+        }
+
+        if (this.supportOffhand.getValue()) {
+            ItemStack mainHand = mc.player.getMainHandItem();
+            ItemStack offhand = mc.player.getOffhandItem();
+            boolean mainHasBlock = BlockUtil.isPlaceable(mainHand);
+            boolean offHasBlock = BlockUtil.isPlaceable(offhand);
+
+            if (!mainHasBlock && offHasBlock) {
+                if (print_log.getValue()) {
+                    ChatUtil.print(true, "§7[AutoContinent] Using offhand block");
+                }
+                if (this.renderItemSpoof.getValue() && this.altSlot == -1) {
+                    this.altSlot = mc.player.getInventory().selected;
+                }
+            } else if (!offHasBlock && mainHasBlock) {
+                if (print_log.getValue()) {
+                    ChatUtil.print(true, "§7[AutoContinent] Offhand depleted, using mainhand");
+                }
+                int slot = findPlaceableSlot();
+                if (slot != -1 && slot != mc.player.getInventory().selected) {
+                    if (!this.slotActive) {
+                        this.altSlot = mc.player.getInventory().selected;
+                    }
+                    mc.player.getInventory().selected = slot;
+                    this.slotActive = true;
+                    this.slotActiveTick = this.slotTicks;
+                }
+            }
+        }
+    }
+
+    // ======================================================================
+    // PRE MOTION
+    // ======================================================================
+    @EventTarget
+    public void onPreMotion(PreMotionEvent event) {
+        event.setCancelled(true);
+        if (mc.screen != null || mc.player == null || this.currentPlacement == null) return;
+
+        if (this.onTickRot.getValue()
+                || (!this.canBuildNow && this.rotationDelay > 0)) {
+            if (this.mode.is("Telly")
+                    && !this.isUpTelly()
+                    && this.airTicks < this.tellyAirTicks.getValue().intValue()) {
+                return;
+            }
+
+            if (this.mode.is("Telly")
+                    && !this.isUpTelly()
+                    && this.tellyPlaceDelay.getValue().intValue() > 0
+                    && this.tellyPlaceDelayTimer < this.tellyPlaceDelay.getValue().intValue()) {
+                return;
+            }
+
+            this.c06Place();
+            return;
+        }
+
+        if (this.mode.is("Telly")
+                && !this.isUpTelly()
+                && this.airTicks < this.tellyAirTicks.getValue().intValue()) {
+            return;
+        }
+
+        if (this.mode.is("Telly")
+                && !this.isUpTelly()
+                && this.tellyPlaceDelay.getValue().intValue() > 0
+                && this.tellyPlaceDelayTimer < this.tellyPlaceDelay.getValue().intValue()) {
+            return;
+        }
+        boolean canRayTrace = RayTraceUtil.canRayTrace(RotationHandler.targetRotation, this.currentPlacement.facing, this.currentPlacement.position, true);
+        if (!this.canBuildNow && !this.isPlacementReachable(this.currentPlacement)) return;
+        if (this.rotationDelay <= 0 && !this.mode.is("Telly") && !canRayTrace) return;
+
+        this.doSnap();
+    }
+
+    // ======================================================================
+    // RENDER
+    // ======================================================================
+    @EventTarget
+    public void onRender(RenderEvent event) {
+        if (mc.player == null || mc.level == null) return;
+        if (this.currentPlacement == null) return;
+
+        PoseStack poseStack = event.poseStack();
+        if (poseStack == null) return;
+
+        AABB targetBox = new AABB(
+                this.currentPlacement.position.relative(this.currentPlacement.facing)
+        );
+
+        if (this.mark.getValue()) {
+            poseStack.pushPose();
+            RenderSystem.disableDepthTest();
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            RenderSystem.setShader(GameRenderer::getPositionShader);
+
+            Tesselator tesselator = RenderSystem.renderThreadTesselator();
+            BufferBuilder bufferBuilder = tesselator.getBuilder();
+            RenderSystem.setShaderColor(
+                    this.markRed.getValue().floatValue() / 255.0f,
+                    this.markGreen.getValue().floatValue() / 255.0f,
+                    this.markBlue.getValue().floatValue() / 255.0f,
+                    this.markAlpha.getValue().floatValue() / 255.0f
+            );
+
+            RenderUtil.drawBoxVerts(bufferBuilder, poseStack.last().pose(), targetBox);
+
+            RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
+            RenderSystem.disableBlend();
+            RenderSystem.enableDepthTest();
+            poseStack.popPose();
+        }
+
+        if (this.esp.getValue()) {
+            BlockPos espPos =
+                    this.currentPlacement.position.relative(this.currentPlacement.facing);
+            this.renderColoredScaffoldEsp(poseStack, espPos);
+        }
+    }
+
+    private void renderColoredScaffoldEsp(PoseStack poseStack, BlockPos pos) {
+        if (mc.level == null || mc.player == null || pos == null || poseStack == null) {
+            return;
+        }
+
+        Vec3 cameraPos = mc.gameRenderer
+                .getMainCamera()
+                .getPosition();
+
+        AABB box = new AABB(pos).move(
+                -cameraPos.x,
+                -cameraPos.y,
+                -cameraPos.z
+        );
+
+        int color = this.getScaffoldEspColor();
+        float r = ((color >> 16) & 0xFF) / 255.0F;
+        float g = ((color >> 8) & 0xFF) / 255.0F;
+        float b = (color & 0xFF) / 255.0F;
+
+        poseStack.pushPose();
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableDepthTest();
+
+        RenderSystem.setShaderColor(r, g, b, 1.0F);
+        RenderSystem.lineWidth(2.0F);
+
+        RenderUtil.drawOutlineBox(
+                box.inflate(0.002D),
+                poseStack
+        );
+
+        RenderSystem.lineWidth(1.0F);
+        RenderSystem.setShaderColor(
+                1.0F,
+                1.0F,
+                1.0F,
+                1.0F
+        );
+
+        RenderSystem.enableDepthTest();
+        RenderSystem.disableBlend();
+
+        poseStack.popPose();
+    }
+
+    private int getScaffoldEspColor() {
+        String selected = this.espColor.getValue();
+
+        if (selected == null) {
+            return 0xFFFFFF;
+        }
+
+        switch (selected) {
+            case "Rainbow": {
+                float hue =
+                        (System.currentTimeMillis() % 3000L) / 3000.0F;
+                return Color.HSBtoRGB(
+                        hue,
+                        0.90F,
+                        1.0F
+                ) & 0xFFFFFF;
+            }
+
+            case "Cyan":
+                return 0x00FFFF;
+
+            case "Red":
+                return 0xFF4040;
+
+            case "Green":
+                return 0x40FF60;
+
+            case "Blue":
+                return 0x4080FF;
+
+            case "White":
+            default:
+                return 0xFFFFFF;
+        }
+    }
+
+
+    @EventTarget
+    public void onRender2D(Render2DEvent event) {
+        if (mc.player == null || mc.level == null) return;
+        if (!this.blockCounter.getValue()) return;
+        if (event == null) return;
+        this.renderShelfHud(event);
+    }
+
+    // ======================================================================
+    // HUD RENDERING
+    // ======================================================================
+    private void renderShelfHud(Render2DEvent event) {
+        if (mc.player == null) return;
+
+        if (!this.shelfHudInitialized) {
+            this.shelfInitialBlocks = this.getBlockSlot();
+            this.shelfHudInitialized = true;
+            this.shelfProgress.reset(1.0f);
+            this.hudLastFrameTime = 0L;
+        }
+
+        // ====== 关键：getBlockSlot() 现在含副手方块，四种模式共用 ======
+        int totalBlocks = this.getBlockSlot();
+        int initialBlocks = Math.max(this.shelfInitialBlocks, 1);
+        float target = Mth.clamp((float) totalBlocks / (float) initialBlocks, 0.0f, 1.0f);
+        long now = System.currentTimeMillis();
+        if (this.hudLastFrameTime == 0L) this.hudLastFrameTime = now;
+        float deltaSec = Math.min((now - this.hudLastFrameTime) / 1000.0f, 0.05f);
+        this.hudLastFrameTime = now;
+        this.shelfProgress.setTargetValue(target);
+        this.shelfProgress.update(deltaSec);
+        float animProg = Mth.clamp(this.shelfProgress.getValue(), 0.0f, 1.0f);
+
+        switch (this.blockCounterStyle.getValue()) {
+            case "Modern" -> this.renderModernShelfHud(event, totalBlocks, animProg);
+            case "Amunix" -> this.renderSimpleShelfHud(event, totalBlocks, animProg);
+            case "Naven" -> this.renderNavenBlockHud(event, totalBlocks);
+            case "Nitro" -> this.renderNitroBlockHud(event, totalBlocks, animProg);
+        }
+    }
+
+    private void renderSimpleShelfHud(Render2DEvent event, int totalBlocks, float animProg) {
+        String labelStr = "Scaffold";
+        String bpsStr = String.format("%.1f b/s", MovementUtil.getSpeedBps());
+        String blocksStr = totalBlocks + "blocks";
+        float bpsWidth = shelfBpsFont.getWidth(bpsStr);
+        float blocksWidth = shelfBlocksFont.getWidth(blocksStr);
+        float screenWidth = mc.getWindow().getGuiScaledWidth();
+        float screenHeight = mc.getWindow().getGuiScaledHeight();
+        float barWidth = 115.0f;
+        float barHeight = 2.0f;
+        float offX = this.blockCounterOffsetX.getValue().floatValue();
+        float offY = this.blockCounterOffsetY.getValue().floatValue();
+        float barX = (screenWidth - barWidth) / 2.0f + offX;
+        float barY = screenHeight / 2.0f + 12.0f + offY;
+
+        this.updateBlockCounterDragging(barX, barY - 15.0f, barWidth, 20.0f);
+        offX = this.blockCounterOffsetX.getValue().floatValue();
+        offY = this.blockCounterOffsetY.getValue().floatValue();
+        barX = (screenWidth - barWidth) / 2.0f + offX;
+        barY = screenHeight / 2.0f + 12.0f + offY;
+
+        float blocksX = barX + barWidth - blocksWidth;
+        float bpsX = blocksX - 10.0f - bpsWidth;
+        float textY = barY - 3.0f;
+        final float fBarX = barX, fBarY = barY, fBlocksX = blocksX, fBpsX = bpsX, fTextY = textY;
+
+        Renderer.render(event.guiGraphics(), drawContext -> {
+            try (Paint paint = new Paint()) {
+                paint.setColor(0xFFFFFFFF);
+                drawContext.drawString(labelStr, fBarX, fTextY + 1.0f, shelfLabelFont, paint);
+                paint.setColor(totalBlocks < 40 ? 0xFFFF4D4D : 0xFFFFFFFF);
+                drawContext.drawString(blocksStr, fBlocksX, fTextY, shelfBlocksFont, paint);
+                paint.setColor(0xFFFFFFFF);
+                drawContext.drawString(bpsStr, fBpsX, fTextY, shelfBpsFont, paint);
+                paint.setColor(0x80333333);
+                drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(fBarX, fBarY, barWidth, barHeight, 2.0f), paint);
+                if (animProg > 0.01f) {
+                    drawContext.save();
+                    drawContext.clip(Rectangle.ofXYWH(fBarX, fBarY, barWidth * animProg, barHeight));
+                    paint.setColor(0xFFFFFFFF);
+                    drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(fBarX, fBarY, barWidth, barHeight, 1.0f), paint);
+                    drawContext.restore();
+                }
+            }
+        });
+    }
+
+    private void renderModernShelfHud(Render2DEvent event, int totalBlocks, float animProg) {
+        String blocksStr = totalBlocks + " blocks";
+        float textWidth = shelfBlocksFont.getWidth(blocksStr);
+        float screenWidth = mc.getWindow().getGuiScaledWidth();
+        float screenHeight = mc.getWindow().getGuiScaledHeight();
+        float hudHeight = 30.0f;
+        float ringDiameter = hudHeight - 10.0f;
+        float hudWidth = 5.0f + ringDiameter + 8.0f + textWidth + 12.0f;
+        float offX = this.blockCounterOffsetX.getValue().floatValue();
+        float offY = this.blockCounterOffsetY.getValue().floatValue();
+        float hudX = (screenWidth - hudWidth) / 2.0f + offX;
+        float hudY = screenHeight / 2.0f + 12.0f + offY;
+
+        this.updateBlockCounterDragging(hudX, hudY, hudWidth, hudHeight);
+        offX = this.blockCounterOffsetX.getValue().floatValue();
+        offY = this.blockCounterOffsetY.getValue().floatValue();
+        hudX = (screenWidth - hudWidth) / 2.0f + offX;
+        hudY = screenHeight / 2.0f + 12.0f + offY;
+
+        float ringX = hudX + 5.0f;
+        float ringY = hudY + (hudHeight - ringDiameter) / 2.0f;
+        float textX = ringX + ringDiameter + 8.0f;
+        float textY = hudY + hudHeight / 2.0f - shelfBlocksFont.getMetrics().capHeight() / 2.0f + 4.0f;
+        final float fHudX=hudX,fHudY=hudY,fRingX=ringX,fRingY=ringY,fTextX=textX,fTextY=textY;
+
+        Renderer.render(event.guiGraphics(), drawContext -> {
+            try (Paint paint = new Paint()) {
+                paint.setColor(0xCC10151C);
+                drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(fHudX, fHudY, hudWidth, hudHeight, hudHeight / 2.0f), paint);
+                float strokeWidth = 2.25f;
+                float centerX = fRingX + ringDiameter / 2.0f;
+                float centerY = fRingY + ringDiameter / 2.0f;
+                float radius = ringDiameter / 2.0f;
+                paint.setAntialias(true);
+                paint.setStrokeWidth(strokeWidth);
+                paint.setStrokeCap(Paint.StrokeCap.STROKE);
+                paint.setStrokeJoin(Paint.StrokeJoin.ROUND);
+                paint.setColor(0x5538D9FF);
+                drawContext.drawArc(fRingX, fRingY, fRingX + ringDiameter, fRingY + ringDiameter, -90.0f, 360.0f, false, 64, paint);
+                if (animProg > 0.001f) {
+                    float sweepAngle = 360.0f * animProg;
+                    paint.setColor(0xFF24D8FF);
+                    drawContext.drawArc(fRingX, fRingY, fRingX + ringDiameter, fRingY + ringDiameter, -90.0f, sweepAngle, false, 64, paint);
+                    if (animProg < 0.999f) {
+                        float capRadius = strokeWidth / 2.0f;
+                        float endAngle = (float) Math.toRadians(-90.0f + sweepAngle);
+                        float endX = centerX + (float) Math.cos(endAngle) * radius;
+                        float endY = centerY + (float) Math.sin(endAngle) * radius;
+                        paint.setStrokeCap(Paint.StrokeCap.FILL);
+                        drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(centerX - capRadius, centerY - radius - capRadius, strokeWidth, strokeWidth, capRadius), paint);
+                        drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(endX - capRadius, endY - capRadius, strokeWidth, strokeWidth, capRadius), paint);
+                    }
+                }
+                paint.setStrokeCap(Paint.StrokeCap.FILL);
+                paint.setColor(totalBlocks < 40 ? 0xFFFF4D4D : 0xFFFFFFFF);
+                drawContext.drawString(blocksStr, fTextX, fTextY, shelfBlocksFont, paint);
+            }
+        });
+    }
+
+    private void renderNavenBlockHud(Render2DEvent event, int totalBlocks) {
+        String label = "Blocks: ";
+        String count = String.valueOf(totalBlocks);
+        FontRenderer navenFont = FontPresets.openSans(15f);
+        float textWidth = navenFont.getWidth(label + count);
+        float screenWidth = mc.getWindow().getGuiScaledWidth();
+        float screenHeight = mc.getWindow().getGuiScaledHeight();
+        float boxW = textWidth + 12f;
+        float boxH = 18f;
+        float offX = this.blockCounterOffsetX.getValue().floatValue();
+        float offY = this.blockCounterOffsetY.getValue().floatValue();
+        float x = screenWidth / 2f - boxW / 2f + offX;
+        float y = screenHeight / 2f + 30f + offY;
+
+        this.updateBlockCounterDragging(x, y, boxW, boxH);
+        offX = this.blockCounterOffsetX.getValue().floatValue();
+        offY = this.blockCounterOffsetY.getValue().floatValue();
+        x = screenWidth / 2f - boxW / 2f + offX;
+        y = screenHeight / 2f + 30f + offY;
+
+        int bgAlpha = 190;
+        int bodyColor = (bgAlpha << 24) | 0x000000;
+        int headerColor = (bgAlpha << 24) | 0x962D2D;
+        final float fx=x, fy=y;
+        Renderer.render(event.guiGraphics(), drawContext -> {
+            try (Paint paint = new Paint()) {
+                paint.setColor(bodyColor);
+                drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(fx, fy, boxW, boxH, 4f), paint);
+                paint.setColor(headerColor);
+                drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(fx, fy, boxW, 3f, 2f), paint);
+                float ty = fy + 13f;
+                paint.setColor(0xFFFFFFFF);
+                drawContext.drawString(label, fx + 6f, ty, navenFont, paint);
+                paint.setColor(totalBlocks < 40 ? 0xFFFF4D4D : 0xFFFFFFFF);
+                drawContext.drawString(count, fx + 6f + navenFont.getWidth(label), ty, navenFont, paint);
+            }
+        });
+    }
+
+    private void renderNitroBlockHud(Render2DEvent event, int totalBlocks, float animProg) {
+        if (mc.player == null || event == null) return;
+
+        ItemStack displayStack = this.getNitroDisplayBlock();
+        if (displayStack.isEmpty()) return;
+
+        final ItemStack iconStack = displayStack;
+        final String itemName = displayStack.getHoverName().getString();
+        final String blocksText = totalBlocks + " blocks";
+        final String bpsText = String.format("%.1f BPS", MovementUtil.getSpeedBps());
+
+        int initialBlocks = Math.max(Math.max(this.shelfInitialBlocks, totalBlocks), 1);
+        int usedBlocks = Math.max(0, initialBlocks - totalBlocks);
+        final String usedText = "Used " + usedBlocks + " / " + initialBlocks;
+
+        FontRenderer nameFont = FontPresets.pingfang(14.0f);
+        FontRenderer mainFont = FontPresets.openSans(13.0f);
+        FontRenderer smallFont = FontPresets.openSans(12.0f);
+
+        boolean horizontal = this.nitroHorizontal.getValue();
+        boolean hideName = this.nitroHideBlockName.getValue();
+
+        float scale = Mth.clamp(this.nitroSize.getValue().floatValue(), 0.5f, 2.0f);
+        float extraX = this.blockCounterOffsetX.getValue().floatValue() + this.nitroOffsetX.getValue().floatValue();
+        float extraY = this.blockCounterOffsetY.getValue().floatValue() + this.nitroOffsetY.getValue().floatValue() + this.nitroOffsetZ.getValue().floatValue();
+
+        float baseIconX = 8.0f;
+        float baseIconY;
+        float baseTextX = 31.0f;
+        float baseRightPad = 9.0f;
+        float baseCardW;
+        float baseCardH;
+
+        if (horizontal) {
+            baseCardH = 30.0f;
+            baseIconY = 7.0f;
+            float contentW = 0.0f;
+            if (!hideName) contentW += nameFont.getWidth(itemName) + 13.0f;
+            contentW += mainFont.getWidth(blocksText) + 13.0f;
+            contentW += mainFont.getWidth(bpsText) + 13.0f;
+            contentW += smallFont.getWidth(usedText);
+            baseCardW = Math.max(150.0f, baseTextX + contentW + baseRightPad);
+        } else {
+            baseCardH = hideName ? 40.0f : 52.0f;
+            baseIconY = (baseCardH - 16.0f) / 2.0f;
+            float secondRowW = mainFont.getWidth(blocksText) + 18.0f + mainFont.getWidth(bpsText);
+            float required = Math.max(secondRowW, smallFont.getWidth(usedText));
+            if (!hideName) required = Math.max(required, nameFont.getWidth(itemName));
+            baseCardW = Math.max(142.0f, baseTextX + required + baseRightPad);
+        }
+
+        float screenWidth = mc.getWindow().getGuiScaledWidth();
+        float screenHeight = mc.getWindow().getGuiScaledHeight();
+        float cardW = baseCardW * scale;
+        float cardH = baseCardH * scale;
+        float cardX = (screenWidth - cardW) / 2.0f + extraX;
+        float cardY = screenHeight / 2.0f + extraY;
+
+        this.updateBlockCounterDragging(cardX, cardY, cardW, cardH);
+        extraX = this.blockCounterOffsetX.getValue().floatValue() + this.nitroOffsetX.getValue().floatValue();
+        extraY = this.blockCounterOffsetY.getValue().floatValue() + this.nitroOffsetY.getValue().floatValue() + this.nitroOffsetZ.getValue().floatValue();
+        cardX = (screenWidth - cardW) / 2.0f + extraX;
+        cardY = screenHeight / 2.0f + extraY;
+
+        int backgroundAlpha = this.nitroCustomAlpha.getValue()
+                ? Mth.clamp(this.nitroAlpha.getValue().intValue(), 0, 255)
+                : 0xCC;
+        final int cardColor = (backgroundAlpha << 24) | 0x00121820;
+        final int normalColor = 0xFFFFFFFF;
+        final int countColor = totalBlocks < 40 ? 0xFFFF4D4D : 0xFFFFFFFF;
+
+        ModuleListHud moduleList = NiloreClient.getInstance().getHudManager() != null
+                ? NiloreClient.getInstance().getHudManager().getHudElement(ModuleListHud.class)
+                : null;
+
+        final float fScale=scale, fCardX=cardX, fCardY=cardY, fBaseCardW=baseCardW, fBaseCardH=baseCardH;
+        final boolean fHorizontal=horizontal, fHideName=hideName;
+
+        Renderer.render(event.guiGraphics(), drawContext -> {
+            drawContext.save();
+            drawContext.translate(fCardX, fCardY);
+            drawContext.scale(fScale, fScale);
+            try (Paint paint = new Paint()) {
+                paint.setAntialias(true);
+                paint.setColor(cardColor);
+                drawContext.drawRoundedRect(RoundedRectangle.ofXYWHR(0.0f, 0.0f, fBaseCardW, fBaseCardH, 8.0f), paint);
+
+                if (fHorizontal) {
+                    float rowY = 18.5f;
+                    float cursor = baseTextX;
+                    if (!fHideName) {
+                        cursor = this.drawNitroThemeText(drawContext, paint, itemName, cursor, rowY, nameFont, moduleList);
+                        cursor += 13.0f;
+                    }
+                    paint.setColor(countColor);
+                    drawContext.drawString(blocksText, cursor, rowY, mainFont, paint);
+                    cursor += mainFont.getWidth(blocksText) + 13.0f;
+                    paint.setColor(normalColor);
+                    drawContext.drawString(bpsText, cursor, rowY, mainFont, paint);
+                    cursor += mainFont.getWidth(bpsText) + 13.0f;
+                    paint.setColor(normalColor);
+                    drawContext.drawString(usedText, cursor, rowY, smallFont, paint);
+                } else {
+                    float nameY = 9.0f;
+                    float blocksY = fHideName ? 14.0f : 25.0f;
+                    float usedY = fHideName ? 28.0f : 40.0f;
+
+                    if (!fHideName) {
+                        this.drawNitroThemeText(drawContext, paint, itemName, baseTextX, nameY, nameFont, moduleList);
+                    }
+
+                    paint.setColor(countColor);
+                    drawContext.drawString(blocksText, baseTextX, blocksY, mainFont, paint);
+
+                    float bpsX = fBaseCardW - baseRightPad - mainFont.getWidth(bpsText);
+                    paint.setColor(normalColor);
+                    drawContext.drawString(bpsText, bpsX, blocksY, mainFont, paint);
+
+                    paint.setColor(normalColor);
+                    drawContext.drawString(usedText, baseTextX, usedY, smallFont, paint);
+                }
+
+                float realProgress = Mth.clamp(
+                        (float) totalBlocks / (float) Math.max(1, initialBlocks),
+                        0.0f,
+                        1.0f
+                );
+
+                float visibleProgress = Mth.clamp(animProg, 0.0f, 1.0f);
+
+                if (visibleProgress <= 0.001f && realProgress > 0.001f) {
+                    visibleProgress = realProgress;
+                }
+
+                float progressX = 7.0f;
+                float progressW = Math.max(1.0f, fBaseCardW - 14.0f);
+                float progressH = 3.0f;
+                float progressY = fBaseCardH - progressH - 2.0f;
+
+                paint.setColor(0x55FFFFFF);
+                drawContext.drawRect(
+                        Rectangle.ofXYWH(
+                                progressX,
+                                progressY,
+                                progressW,
+                                progressH
+                        ),
+                        paint
+                );
+
+                float filledW = Math.max(
+                        0.0f,
+                        progressW * visibleProgress
+                );
+
+                if (filledW > 0.05f) {
+                    int progressColor;
+
+                    if (totalBlocks < 40) {
+                        progressColor = 0xFFFF4040;
+                    } else {
+                        progressColor = moduleList != null
+                                ? moduleList.getThemeColor(0, visibleProgress, 1)
+                                : 0xFFFFFFFF;
+                    }
+
+                    paint.setColor(progressColor);
+                    drawContext.drawRect(
+                            Rectangle.ofXYWH(
+                                    progressX,
+                                    progressY,
+                                    filledW,
+                                    progressH
+                            ),
+                            paint
+                    );
+                }
+            } finally {
+                drawContext.restore();
+            }
+        });
+
+        var guiPose = event.guiGraphics().pose();
+        guiPose.pushPose();
+        guiPose.translate(cardX + baseIconX * scale, cardY + baseIconY * scale, 200.0f);
+        guiPose.scale(scale, scale, 1.0f);
+        event.guiGraphics().renderItem(iconStack, 0, 0);
+        guiPose.popPose();
+    }
+
+    private void updateBlockCounterDragging(float hudX, float hudY, float hudWidth, float hudHeight) {
+        if (!(mc.screen instanceof ChatScreen)) {
+            this.blockCounterDragging = false;
+            this.blockCounterMouseWasDown = false;
+            return;
+        }
+
+        long window = mc.getWindow().getWindow();
+        boolean leftDown = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+        double[] rawX = new double[1];
+        double[] rawY = new double[1];
+        GLFW.glfwGetCursorPos(window, rawX, rawY);
+
+        double mouseX = rawX[0] * mc.getWindow().getGuiScaledWidth() / Math.max(1.0, mc.getWindow().getScreenWidth());
+        double mouseY = rawY[0] * mc.getWindow().getGuiScaledHeight() / Math.max(1.0, mc.getWindow().getScreenHeight());
+
+        boolean hovered = mouseX >= hudX && mouseX <= hudX + hudWidth
+                && mouseY >= hudY && mouseY <= hudY + hudHeight;
+
+        if (leftDown && !this.blockCounterMouseWasDown && hovered) {
+            this.blockCounterDragging = true;
+            this.blockCounterDragStartMouseX = mouseX;
+            this.blockCounterDragStartMouseY = mouseY;
+            this.blockCounterDragStartOffsetX = this.blockCounterOffsetX.getValue().floatValue();
+            this.blockCounterDragStartOffsetY = this.blockCounterOffsetY.getValue().floatValue();
+        }
+
+        if (this.blockCounterDragging) {
+            if (!leftDown) {
+                this.blockCounterDragging = false;
+            } else {
+                float newX = this.blockCounterDragStartOffsetX + (float)(mouseX - this.blockCounterDragStartMouseX);
+                float newY = this.blockCounterDragStartOffsetY + (float)(mouseY - this.blockCounterDragStartMouseY);
+                this.blockCounterOffsetX.setValue(Mth.clamp(newX, -2000.0f, 2000.0f));
+                this.blockCounterOffsetY.setValue(Mth.clamp(newY, -2000.0f, 2000.0f));
+            }
+        }
+
+        this.blockCounterMouseWasDown = leftDown;
+    }
+
+    private float drawNitroThemeText(
+            client.nilore.render.DrawContext drawContext,
+            Paint paint,
+            String text,
+            float x,
+            float y,
+            FontRenderer font,
+            ModuleListHud moduleList
+    ) {
+        float cursor = x;
+        int len = text.length();
+        for (int i = 0; i < len; i++) {
+            String ch = String.valueOf(text.charAt(i));
+            float progress = len <= 1 ? 0.0f : i / (float)(len - 1);
+            int color = moduleList != null
+                    ? moduleList.getThemeColor(i, progress, Math.max(1, len - 1))
+                    : 0xFFFFFFFF;
+            paint.setColor(color);
+            drawContext.drawString(ch, cursor, y, font, paint);
+            cursor += font.getWidth(ch);
+        }
+        return cursor;
+    }
+
+    private ItemStack getNitroDisplayBlock() {
+        if (mc.player == null) {
+            return ItemStack.EMPTY;
+        }
+
+        ItemStack mainHand = mc.player.getMainHandItem();
+        if (!mainHand.isEmpty()
+                && mainHand.getItem() instanceof BlockItem
+                && BlockUtil.isPlaceable(mainHand)) {
+            return mainHand;
+        }
+
+        int selected = mc.player.getInventory().selected;
+        if (selected >= 0 && selected < 9) {
+            ItemStack selectedStack = mc.player.getInventory().getItem(selected);
+            if (!selectedStack.isEmpty()
+                    && selectedStack.getItem() instanceof BlockItem
+                    && BlockUtil.isPlaceable(selectedStack)) {
+                return selectedStack;
+            }
+        }
+
+        int slot = this.getSmartBlockSlot();
+        if (slot >= 0 && slot < 9) {
+            ItemStack stack = mc.player.getInventory().getItem(slot);
+            if (!stack.isEmpty()
+                    && stack.getItem() instanceof BlockItem
+                    && BlockUtil.isPlaceable(stack)) {
+                return stack;
+            }
+        }
+
+        ItemStack offhand = mc.player.getOffhandItem();
+        if (this.supportOffhand.getValue()
+                && !offhand.isEmpty()
+                && offhand.getItem() instanceof BlockItem
+                && BlockUtil.isPlaceable(offhand)) {
+            return offhand;
+        }
+
+        return ItemStack.EMPTY;
+    }
+
+    /**
+     * Block Counter HUD 显示用的方块总数。
+     *
+     * 修改：现在会把副手方块也计入，与内部逻辑 {@link #getTotalBlockCount()} 完全一致。
+     * 所有 Block Counter 样式（Modern / Amunix / Naven / Nitro）都通过
+     * {@link #renderShelfHud(Render2DEvent)} 调用本方法，因此四种模式全部自动生效。
+     *
+     * @return 主背包 36 格 + 副手的可放置方块总数
+     */
+    private int getBlockSlot() {
+        if (mc.player == null) return 0;
+        int total = 0;
+        // 主背包 0~35 格
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = mc.player.getInventory().getItem(i);
+            if (stack.getItem() instanceof BlockItem && BlockUtil.isPlaceable(stack)) {
+                total += stack.getCount();
+            }
+        }
+        // 副手方块
+        ItemStack offhand = mc.player.getOffhandItem();
+        if (offhand.getItem() instanceof BlockItem && BlockUtil.isPlaceable(offhand)) {
+            total += offhand.getCount();
+        }
+        return total;
+    }
+
+    // ======================================================================
+    // CORE PLACEMENT LOGIC
+    // ======================================================================
+    private boolean isPlacementReachable(PlacementTarget target) {
+        if (target == null || mc.player == null) return false;
+        Vec3 blockCenter = new Vec3(target.position.getX() + 0.5, target.position.getY() + 0.5f, target.position.getZ() + 0.5);
+        Vec3 hitPoint = blockCenter.add(new Vec3(
+                target.facing.getNormal().getX() * 0.5,
+                target.facing.getNormal().getY() * 0.5,
+                target.facing.getNormal().getZ() * 0.5));
+        Rotation currentTarget = RotationHandler.targetRotation;
+        if (currentTarget == null) return false;
+        Vec3 eye = mc.player.getEyePosition();
+        Vec3 toBlock = hitPoint.subtract(eye);
+        return toBlock.lengthSqr() <= 20.25
+                && toBlock.normalize().dot(Vec3.atLowerCornerOf(target.facing.getNormal().multiply(-1)).normalize()) >= 0.0;
+    }
+
+    private void calculateTargetRotation() {
+        if (this.currentPlacement == null || mc.player == null) return;
+
+        float realYaw = mc.player.getYRot();
+        if (mc.options.keyDown.isDown()) {
+            realYaw += 180.0f;
+            if (mc.options.keyLeft.isDown()) realYaw += 45.0f;
+            else if (mc.options.keyRight.isDown()) realYaw -= 45.0f;
+        } else if (mc.options.keyUp.isDown()) {
+            if (mc.options.keyLeft.isDown()) realYaw -= 45.0f;
+            else if (mc.options.keyRight.isDown()) realYaw += 45.0f;
+        } else if (mc.options.keyRight.isDown()) {
+            realYaw += 90.0f;
+        } else if (mc.options.keyLeft.isDown()) {
+            realYaw -= 90.0f;
+        }
+
+        float yaw = realYaw - 180.0f;
+        float idealPitch = 75.5f;
+        float currentPitch = this.rots.getPitch();
+
+        this.aimBranch = "ideal-75.5";
+        if (isRotationValidForPlacement(new Rotation(yaw, idealPitch))) {
+            applyRotationWithSpeed(yaw, idealPitch);
+            return;
+        }
+
+        this.aimBranch = "keep-current";
+        if (isRotationValidForPlacement(new Rotation(yaw, currentPitch))) {
+            applyRotationWithSpeed(yaw, currentPitch);
+            return;
+        }
+
+        this.aimBranch = "nearest-from-current";
+        Float nearest = findValidPitchNear(yaw, currentPitch);
+        if (nearest != null) {
+            applyRotationWithSpeed(yaw, nearest);
+            return;
+        }
+
+        this.aimBranch = "nearest-to-ideal";
+        Float towardIdeal = findValidPitchNear(yaw, idealPitch);
+        if (towardIdeal != null) {
+            applyRotationWithSpeed(yaw, towardIdeal);
+            return;
+        }
+
+        this.aimBranch = "optimal-search";
+        Rotation optimal = findOptimalRotation(yaw);
+        if (optimal != null) {
+            applyRotationWithSpeed(optimal.getYaw(), optimal.getPitch());
+            return;
+        }
+
+        this.aimBranch = "hold";
+        applyRotationWithSpeed(yaw, currentPitch);
+    }
+
+    private void logLargeDelta(Rotation rotation) {
+        if (!print_log.getValue()) return;
+        Rotation prev = RotationHandler.prevRotation;
+        if (prev == null) return;
+        float dYaw = Math.abs(Mth.wrapDegrees(rotation.getYaw() - prev.getYaw()));
+        float dPitch = Math.abs(rotation.getPitch() - prev.getPitch());
+        float magnitude = (float) Math.hypot(dYaw, dPitch);
+        if (magnitude <= 5.0f) return;
+        String targetInfo = this.currentPlacement != null
+                ? this.currentPlacement.position.toShortString() + "@" + this.currentPlacement.facing
+                : "null";
+        ChatUtil.print(true, "§7[scaffold] " + this.aimBranch
+                + String.format(" Δ%.1f° (Δyaw %.1f Δpitch %.1f) target=%s",
+                magnitude, dYaw, dPitch, targetInfo));
+    }
+
+    private boolean isRotationValidForPlacement(Rotation rotation) {
+        if (this.currentPlacement == null) return false;
+        return RayTraceUtil.canRayTrace(rotation, this.currentPlacement.facing, this.currentPlacement.position, true);
+    }
+
+    private Float findValidPitchNear(float yaw, float center) {
+        if (this.currentPlacement == null) return null;
+
+        for (float offset = 0.0f; offset <= 30.0f; offset += 0.3f) {
+            float down = Mth.clamp(center - offset, -90.0f, 90.0f);
+            if (isRotationValidForPlacement(new Rotation(yaw, down))) {
+                return down;
+            }
+            float up = center + offset;
+            if (up <= 90.0f && isRotationValidForPlacement(new Rotation(yaw, up))) {
+                return up;
+            }
+        }
+        return null;
+    }
+
+    private Rotation findOptimalRotation(float baseYaw) {
+        if (this.currentPlacement == null) return null;
+
+        for (float yawOffset = 0.0f; yawOffset < 180.0f; yawOffset++) {
+            float currentPitch = this.rots.getPitch();
+            for (float pitchOffset = 0.0f; pitchOffset < 25.0f; pitchOffset++) {
+                for (int i = 0; i < 2; i++) {
+                    float testPitch = currentPitch - pitchOffset * (i == 0 ? 1 : -1);
+                    testPitch = Mth.clamp(testPitch, -90.0f, 90.0f);
+
+                    Rotation test1 = new Rotation(baseYaw + yawOffset, testPitch);
+                    if (isRotationValidForPlacement(test1)) return test1;
+
+                    Rotation test2 = new Rotation(baseYaw - yawOffset, testPitch);
+                    if (isRotationValidForPlacement(test2)) return test2;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void applyRotationWithSpeed(float yaw, float pitch) {
+        if (this.currentPlacement == null || mc.player == null) return;
+
+        float speed;
+        if (this.syncRotSpeed.getValue()) {
+            Rotation current = RotationHandler.targetRotation;
+            if (current != null) {
+                float realYaw = mc.player.getYRot();
+                float currentDiffToReal = Math.abs(Mth.wrapDegrees(current.getYaw() - realYaw));
+                float newDiffToReal = Math.abs(Mth.wrapDegrees(yaw - realYaw));
+                if (newDiffToReal < currentDiffToReal) {
+                    speed = this.returnSpeed.getValue().floatValue();
+                } else {
+                    speed = this.turnSpeed.getValue().floatValue();
+                }
+            } else {
+                speed = this.turnSpeed.getValue().floatValue();
+            }
+        } else {
+            speed = this.rotationSpeed.getValue().floatValue();
+        }
+
+        Rotation rotation = new Rotation(yaw, pitch);
+        if (speed < 360f) {
+            Rotation current = RotationHandler.targetRotation;
+            if (current == null) {
+                current = new Rotation(mc.player.getYRot(), mc.player.getXRot());
+            }
+            rotation = this.rotSmoother.tick(current, rotation, speed);
+        }
+        Rotation anchor = RotationHandler.prevRotation != null
+                ? RotationHandler.prevRotation
+                : new Rotation(mc.player.getYRot(), mc.player.getXRot());
+        rotation = RotationSmoother.patchConstantRotation(rotation, anchor);
+        logLargeDelta(rotation);
+
+        this.rots.setYawPitch(rotation.getYaw(), rotation.getPitch());
+        RotationHandler.setTargetRotation(this.rots);
+    }
+
+    private void applyRotations() {
+        if (mc.player == null || mc.level == null) return;
+        Vec3 eye = mc.player.getEyePosition();
+        if (!this.canBuildNow) {
+            eye = mc.player.getEyePosition().add(mc.player.getDeltaMovement().multiply(2.0, 2.0, 2.0));
+        }
+        if (this.clutch.getValue() && mc.player.getDeltaMovement().y < 0.01) {
+            MotionSimulator sim = new MotionSimulator(mc.player);
+            sim.simulateWithFriction(2);
+            eye = new Vec3(eye.x, Math.max(sim.y + mc.player.getEyeHeight(), eye.y), eye.z);
+        }
+        BlockPos belowFeet = BlockPos.containing(eye.x, this.targetYLevel + 0.1f, eye.z);
+        int feetX = belowFeet.getX();
+        int feetZ = belowFeet.getZ();
+        if (mc.level.getBlockState(belowFeet).entityCanStandOn(mc.level, belowFeet, mc.player)) return;
+        if (this.isAbovePlaceable(eye, belowFeet)) return;
+        for (int radius = 1; radius <= 6; radius++) {
+            if (this.isAbovePlaceable(eye, new BlockPos(feetX, this.targetYLevel - radius, feetZ))) return;
+            for (int x = 1; x <= radius; x++) {
+                for (int z = 0; z <= radius - x; z++) {
+                    int yOff = radius - x - z;
+                    for (int signX = 0; signX <= 1; signX++) {
+                        for (int signZ = 0; signZ <= 1; signZ++) {
+                            BlockPos test = new BlockPos(
+                                    feetX + (signX == 0 ? x : -x),
+                                    this.targetYLevel - yOff,
+                                    feetZ + (signZ == 0 ? z : -z));
+                            if (this.isAbovePlaceable(eye, test)) return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 判断目标位置是否可替换（支持水、空气、高草等）。
+     */
+    private boolean isReplaceableAt(BlockPos pos) {
+        if (mc.level == null) return false;
+        BlockState state = mc.level.getBlockState(pos);
+        if (state.isAir()) return true;
+        if (state.canBeReplaced()) return true;
+        if (!state.getFluidState().isEmpty()) return true;
+        return false;
+    }
+
+    private boolean isAbovePlaceable(Vec3 from, BlockPos pos) {
+        if (mc.level == null || mc.player == null) return false;
+        if (!isReplaceableAt(pos)) return false;
+        Vec3 center = new Vec3(pos.getX() + 0.5, pos.getY() + 0.5f, pos.getZ() + 0.5);
+        for (Direction direction : Direction.values()) {
+            Vec3 offsetCenter = center.add(new Vec3(
+                    direction.getNormal().getX() * 0.5,
+                    direction.getNormal().getY() * 0.5,
+                    direction.getNormal().getZ() * 0.5));
+            BlockPos offset = pos.offset(direction.getNormal());
+            BlockState offsetState = mc.level.getBlockState(offset);
+
+            Direction faceTowardAir = direction.getOpposite();
+            if (!canSupportAirPlacement(offsetState, offset, faceTowardAir)) continue;
+
+            Vec3 delta = offsetCenter.subtract(from);
+            if (delta.lengthSqr() <= 20.25
+                    && delta.normalize().dot(Vec3.atLowerCornerOf(direction.getNormal()).normalize()) >= 0.0) {
+                this.currentPlacement = new PlacementTarget(new BlockPos(offset.getX(), offset.getY(), offset.getZ()), faceTowardAir);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断相邻方块是否能支撑空气方块放置。
+     * 重点支持：半砖（SlabBlock）的所有面。
+     */
+    private boolean canSupportAirPlacement(BlockState state, BlockPos pos, Direction faceTowardAir) {
+        if (state.entityCanStandOnFace(mc.level, pos, mc.player, faceTowardAir)) return true;
+        if (state.entityCanStandOnFace(mc.level, pos, mc.player, faceTowardAir.getOpposite())) return true;
+
+        if (state.getBlock() instanceof SlabBlock) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean shouldBuild() {
+        if (mc.player == null || mc.level == null) return false;
+        BlockPos below = BlockPos.containing(mc.player.getX(), mc.player.getY() - 0.5, mc.player.getZ());
+        return isReplaceableAt(below) && hasPlaceableBlock();
+    }
+
+    private float rotationJitter() {
+        float offset = (float) (Math.random() * 0.04 + 0.03);
+        return Math.random() > 0.5 ? offset : -offset;
+    }
+
+    private void c06Place() {
+        if (this.currentPlacement == null || mc.player == null || mc.gameMode == null) return;
+
+        Direction facing = this.currentPlacement.facing;
+        if (facing == null) return;
+        if (facing == Direction.UP && !mc.player.onGround() && MovementUtil.isMoving()
+                && !mc.options.keyJump.isDown() && this.mode.is("Telly")) return;
+
+        if (!hasPlaceableBlock()) return;
+
+        Vec3 faceCenter = getFaceCenter(this.currentPlacement.position, facing);
+        Rotation targetRot = RotationUtil.exactRotation(mc.player.getEyePosition(), faceCenter);
+
+        if (!RayTraceUtil.canRayTrace(targetRot, facing, this.currentPlacement.position, true)) {
+            return;
+        }
+
+        float origYaw = mc.player.getYRot();
+        float origPitch = mc.player.getXRot();
+
+        mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
+                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                targetRot.getYaw() + rotationJitter(),
+                targetRot.getPitch() + rotationJitter(),
+                mc.player.onGround()
+        ));
+
+        BlockHitResult hit = new BlockHitResult(
+                getHitVec(this.currentPlacement.position, facing), facing,
+                this.currentPlacement.position, false);
+
+        InteractionHand hand = getAvailableHand();
+        InteractionResult result = mc.gameMode.useItemOn(mc.player, hand, hit);
+
+        if (result == InteractionResult.SUCCESS) {
+            if (!this.swingMode.is("Server")) {
+                mc.player.swing(hand);
+            }
+        }
+
+        mc.getConnection().send(new ServerboundMovePlayerPacket.PosRot(
+                mc.player.getX(), mc.player.getY(), mc.player.getZ(),
+                origYaw + rotationJitter(),
+                origPitch + rotationJitter(),
+                mc.player.onGround()
+        ));
+    }
+
+    private void doSnap() {
+        if (this.currentPlacement == null || mc.player == null || mc.gameMode == null) return;
+
+        if (!hasPlaceableBlock()) return;
+
+        if (!this.canBuildNow && this.clutch.getValue() && this.currentPlacement.position != null
+                && !this.currentPlacement.position.equals(this.lastC05Position)) {
+            this.lastC05Position = this.currentPlacement.position;
+            this.aimBranch = "c05-snap";
+            Vec3 c05Target = getFaceCenter(this.currentPlacement.position, this.currentPlacement.facing);
+            Vec3 c05Eye = new Vec3(mc.player.getX() + mc.player.getDeltaMovement().x, mc.player.getY() + mc.player.getEyeHeight() + mc.player.getDeltaMovement().y, mc.player.getZ() + mc.player.getDeltaMovement().z);
+            Rotation c05Rotation = RotationUtil.rotationFromPoints(c05Target.x, c05Target.y, c05Target.z, c05Eye.x, c05Eye.y, c05Eye.z);
+            logLargeDelta(c05Rotation);
+            float yaw = c05Rotation.getYaw();
+            if (yaw > -360.0f && yaw < 360.0f) {
+                yaw += 720.0f;
+            }
+            PacketUtil.sendQueued(new ServerboundMovePlayerPacket.Rot(yaw, c05Rotation.getPitch(), mc.player.onGround()));
+        }
+
+        Direction facing = this.currentPlacement.facing;
+        boolean jumpHeld = InputConstants.isKeyDown(mc.getWindow().getWindow(), mc.options.keyJump.getKey().getValue());
+        if (facing == null) return;
+
+        if (facing == Direction.UP && !mc.player.onGround() && MovementUtil.isMoving() && !jumpHeld && !this.mode.is("Normal")) {
+            return;
+        }
+
+        if (!this.shouldBuild()) return;
+        if (!this.isAimingAtPlacementFace()) return;
+        BlockHitResult hit = new BlockHitResult(getHitVec(this.currentPlacement.position, facing), facing, this.currentPlacement.position, false);
+        InteractionHand hand = getAvailableHand();
+        InteractionResult result = mc.gameMode.useItemOn(mc.player, hand, hit);
+        if (result == InteractionResult.SUCCESS && !this.swingMode.is("Server")) {
+            mc.player.swing(hand);
+        }
+    }
+
+    // ======================================================================
+    // STATIC UTILITIES
+    // ======================================================================
+    public static boolean isOnBlockEdge(float inflate) {
+        if (mc.level == null || mc.player == null) return false;
+        double halfWidth = mc.player.getBbWidth() / 2.0;
+        if (inflate >= halfWidth) return true;
+        double margin = Math.min(inflate, halfWidth * 0.99);
+        Vec3 pos = mc.player.position();
+        for (int sx = -1; sx <= 1; sx += 2) {
+            for (int sz = -1; sz <= 1; sz += 2) {
+                BlockPos corner = BlockPos.containing(
+                        pos.x + sx * margin,
+                        pos.y - 1.0,
+                        pos.z + sz * margin
+                );
+                BlockState state = mc.level.getBlockState(corner);
+                if (!state.entityCanStandOn(mc.level, corner, mc.player)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public static Vec3 getFaceCenter(BlockPos pos, Direction direction) {
+        return new Vec3(
+                pos.getX() + 0.5 + direction.getNormal().getX() * 0.5,
+                pos.getY() + 0.5 + direction.getNormal().getY() * 0.5,
+                pos.getZ() + 0.5 + direction.getNormal().getZ() * 0.5);
+    }
+
+    public static Vec3 getHitVec(BlockPos pos, Direction direction) {
+        return getFaceCenter(pos, direction);
+    }
+
+    private boolean isAimingAtPlacementFace() {
+        if (this.currentPlacement == null || mc.player == null) return false;
+        Rotation rotation = RotationHandler.targetRotation;
+        if (rotation == null) {
+            rotation = this.rots;
+        }
+        if (rotation == null) return false;
+        return RayTraceUtil.canRayTrace(rotation, this.currentPlacement.facing, this.currentPlacement.position, true);
+    }
+
+    private record PlacementTarget(BlockPos position, Direction facing) {
+    }
+}
