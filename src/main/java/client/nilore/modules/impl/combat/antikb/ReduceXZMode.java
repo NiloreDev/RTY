@@ -223,7 +223,7 @@ public class ReduceXZMode
                 if (this.attacksRemaining <= 0) {
                     this.attacksRemaining = Velocity.INSTANCE.isNoXZAltAttackAmount.getValue().intValue();
 
-                    // 【新增】Delay OFF 时也触发 Jump Reset
+                    // Delay OFF 时也触发 Jump Reset
                     if (Velocity.INSTANCE.jumpReset.getValue()) {
                         this.jumpTicks = 1;
                     }

@@ -6,7 +6,7 @@ import lombok.Generated;
 import client.nilore.event.Event;
 
 public class MotionEvent
-extends Event {
+        extends Event {
     @Getter @Setter
     public boolean pre;
     @Getter @Setter
@@ -35,9 +35,5 @@ extends Event {
         this.yaw = yaw;
         this.pitch = pitch;
         this.onGround = onGround;
-    }
-
-    public Object getType() {
-        return null;
     }
 }

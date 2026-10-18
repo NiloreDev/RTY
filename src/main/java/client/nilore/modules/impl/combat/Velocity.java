@@ -160,17 +160,24 @@ public class Velocity extends Module {
                     .withVisibility(() -> mode.is("Velocity"));
 
     public final BooleanSetting rotate =
-            new BooleanSetting("Rotate", false,
+            new BooleanSetting("Rotate", true,
                     () -> isEffectiveMode("JumpReset") || isEffectiveMode("Mix"));
+
     public final BooleanSetting tryAttack =
             new BooleanSetting("Try Attack", false,
                     () -> isEffectiveMode("Mix"));
+
     public final BooleanSetting movementOverride =
             new BooleanSetting("Movement Override", false,
                     () -> isEffectiveMode("Mix"));
 
     public final BooleanSetting followDirection =
-            new BooleanSetting("Follow Direction", false,
+            new BooleanSetting("Follow Direction", true,
+                    () -> isEffectiveMode("JumpReset"));
+
+    /** 预判提前跳（新增） */
+    public final BooleanSetting predict =
+            new BooleanSetting("Predict", false,
                     () -> isEffectiveMode("JumpReset"));
 
     /** Jump Reset 是否过滤摔落/水落伤害的速度包 */

@@ -16,6 +16,7 @@ import net.minecraft.world.phys.Vec3;
 
 import client.nilore.event.EventTarget;
 import client.nilore.event.impl.EntityRemoveEvent;
+import client.nilore.event.impl.MotionEvent;
 import client.nilore.event.impl.PlayerTickEvent;
 import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.StrafeEvent;
@@ -34,10 +35,8 @@ import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
 
 /**
- * Critical —— 暴击辅助
- *
- * GrimAC Debug 输出（开启后只在真正暴击时显示伤害）：
- *   §c[Velocity] §4[Critical] §fDamage: 8.50
+ * Critical —— 暴击辅助 (融合版)
+ * GrimAC 等同于 Grim，使用 PostMotion 发包确保疾跑释放，并支持 Auto Jump。
  */
 public class Critical extends Module {
 
@@ -72,9 +71,9 @@ public class Critical extends Module {
             new NumberSetting("SkipTicks Range", 3.0, 1.0, 6.0, 0.1,
                     () -> this.mode.is("SkipTicks"));
 
+    // 【修改】Auto Jump 改为全局可见，所有模式都能开，作用是在打人时保持疾跑
     public final BooleanSetting autoJump =
-            new BooleanSetting("Auto Jump", false,
-                    () -> this.mode.is("Optimize"));
+            new BooleanSetting("Auto Jump", false);
 
     // ==================== 通用 debug 开关 ====================
     public final BooleanSetting debug = new BooleanSetting("Debug", false);
@@ -83,14 +82,7 @@ public class Critical extends Module {
     public int fallTicks;
     private boolean stopSprinting;
 
-    /**
-     * 【核心】上一 tick 玩家是否处于暴击就绪状态。
-     * 用于在 EntityRemoveEvent 触发时兜底判定：即使当前帧状态已刷新，
-     * 只要上一帧处于暴击条件，就认为本次攻击是暴击。
-     */
-    private boolean wasCritReadyLastTick = false;
-
-    // ==================== SkipTicks / Optimize 状态 ====================
+    // ==================== SkipTicks / Optimize / Grim 状态 ====================
     private LivingEntity enemy;
     private boolean isAttack;
     private boolean isSprint;
@@ -122,7 +114,6 @@ public class Critical extends Module {
         super.onEnable();
         this.fallTicks = 0;
         this.stopSprinting = false;
-        this.wasCritReadyLastTick = false;
         this.clearState();
     }
 
@@ -130,7 +121,6 @@ public class Critical extends Module {
     public void onDisable() {
         this.fallTicks = 0;
         this.stopSprinting = false;
-        this.wasCritReadyLastTick = false;
         this.clearState();
 
         restoreTimer();
@@ -156,19 +146,52 @@ public class Critical extends Module {
     public void onTick(TickEvent event) {
         if (mc.player == null) return;
 
-        // 【核心】每 tick 缓存一次暴击就绪状态，供攻击事件兜底判定使用
-        this.wasCritReadyLastTick = this.isValidCritHit();
-
         if (this.mode.is("Normal")) {
             this.tickNormal();
-        } else if (this.mode.is("GrimAC")) {
-            this.tickGrim();
         } else if (this.mode.is("GrimTimer")) {
             this.tickGrimTimer();
         } else if (this.mode.is("Stuck") || this.mode.is("1.9+")) {
             this.tickAdvanced();
+        }
+        // GrimAC 和 Optimize 的状态机已被移至 onPostMotion
+    }
+
+    /**
+     * 版本 2 的 Grim / Optimize 逻辑：在 Post 阶段释放疾跑。
+     */
+    @EventTarget
+    public void onPostMotion(MotionEvent event) {
+        if (mc.player == null || !event.isPost()) {
+            return;
+        }
+        if (this.enemy == null) {
+            return;
+        }
+
+        if (this.mode.is("GrimAC")) {
+            if (this.enemy.hurtTime < 2 || this.enemy.distanceTo(mc.player) > 4.0) {
+                this.enemy = null;
+                this.isAttack = false;
+                return;
+            }
+            if (this.isAttack && !mc.player.onGround() && mc.player.fallDistance > 0.0f) {
+                this.releaseSprint();
+                this.isSprint = true;
+            }
         } else if (this.mode.is("Optimize")) {
-            this.tickOptimize();
+            if (this.enemy.hurtTime < 2 || this.enemy.distanceTo(mc.player) > 4.0) {
+                this.enemy = null;
+                this.isAttack = false;
+                stopAttack = false;
+                return;
+            }
+            double velocityY = mc.player.getDeltaMovement().y;
+            stopAttack = !mc.player.onGround() && velocityY > 0.0 && velocityY < 0.16;
+            if (this.isAttack && this.isFalling()) {
+                this.releaseSprint();
+                this.debugLog("Balance.");
+                this.balance = true;
+            }
         }
     }
 
@@ -201,7 +224,8 @@ public class Critical extends Module {
             return;
         }
 
-        if (this.mode.is("Optimize") && this.autoJump.getValue()) {
+        // 【新增】版本 2 的 Auto Jump 逻辑：只要开了 Auto Jump，且在地面、疾跑、有攻击目标，就保持疾跑
+        if (this.autoJump.getValue()) {
             if (mc.player.onGround() && mc.player.isSprinting() && this.isAttack) {
                 event.setSprinting(true);
             }
@@ -210,34 +234,9 @@ public class Critical extends Module {
 
     @EventTarget
     public void onAttack(EntityRemoveEvent event) {
-        if (mc.player == null) return;
-
-        // ============================================================
-        // 【核心】GrimAC debug —— 只在真正暴击时输出伤害
-        //
-        // 判定优先级：
-        //   1. 攻击对象必须是 LivingEntity
-        //   2. 当前帧满足暴击条件 → 立即输出
-        //   3. 否则回退检查上一帧缓存的暴击就绪状态
-        //      （解决攻击瞬间 onGround / fallDistance 被提前刷新导致漏判）
-        //
-        // 该分支放在 event.dead() 过滤之前，避免被误拦。
-        // ============================================================
-        if (this.mode.is("GrimAC") && this.debug.getValue()
-                && event.entity() instanceof LivingEntity living) {
-
-            boolean critNow = this.isValidCritHit();
-            boolean critPrev = this.wasCritReadyLastTick;
-
-            if (critNow || critPrev) {
-                this.grimDebugLog(living);
-                // 输出完成后清掉缓存，防止同一次暴击被重复打印
-                this.wasCritReadyLastTick = false;
-                return;
-            }
+        if (mc.player == null || event.dead()) {
+            return;
         }
-
-        if (event.dead()) return;
 
         if (this.mode.is("SkipTicks")) {
             if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting()
@@ -247,60 +246,33 @@ public class Critical extends Module {
             return;
         }
 
-        if (!(this.mode.is("GrimAC") || this.mode.is("Optimize"))) return;
-
+        // 版本 2 的 Grim 攻击记录逻辑
         if (!(event.entity() instanceof LivingEntity living)) {
             this.enemy = null;
             this.isAttack = false;
             this.isSprint = false;
             return;
         }
+
         if (mc.player.isSprinting()) {
             this.enemy = living;
             this.isAttack = true;
         }
+
         if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting() && this.isAttack && this.isSprint) {
             this.isAttack = false;
             this.isSprint = false;
             if (this.mode.is("Optimize")) {
                 stopAttack = false;
             }
-            if (this.mode.is("GrimAC")) {
+
+            // 【保留第1个的Debug输出】
+            if (this.mode.is("GrimAC") && this.debug.getValue()) {
                 this.grimDebugLog(living);
             } else {
                 this.debugLog("Crit.");
             }
         }
-    }
-
-    /**
-     * 【核心】判断当前帧是否构成一次有效的原版暴击命中。
-     * 严格按原版暴击物理条件判定，不依赖任何历史标记状态。
-     *
-     * 原版暴击条件（1.8 / 1.9+ 通用）：
-     *   - fallDistance > 0（下坠中）
-     *   - 不在地面
-     *   - 不在梯子/藤蔓
-     *   - 不在水中 / 岩浆
-     *   - 不在载具
-     *   - 未使用鞘翅
-     *   - 无失明 / 缓慢 / 漂浮效果
-     */
-    private boolean isValidCritHit() {
-        if (mc.player == null) return false;
-        // 必须处于下坠状态
-        if (mc.player.fallDistance <= 0.0f) return false;
-        // 排除无效状态
-        if (mc.player.onGround()) return false;
-        if (mc.player.onClimbable()) return false;
-        if (mc.player.isInWater() || mc.player.isInLava()) return false;
-        if (mc.player.isPassenger()) return false;
-        if (mc.player.isFallFlying()) return false;
-        // 排除负面状态
-        if (mc.player.hasEffect(MobEffects.BLINDNESS)) return false;
-        if (mc.player.hasEffect(MobEffects.MOVEMENT_SLOWDOWN)) return false;
-        if (mc.player.hasEffect(MobEffects.LEVITATION)) return false;
-        return true;
     }
 
     @EventTarget
@@ -317,7 +289,7 @@ public class Critical extends Module {
         return true;
     }
 
-    // ==================== Normal 模式 ====================
+    // ==================== 模式专属逻辑 ====================
     private void tickNormal() {
         if (mc.player == null || !canCritNormal() || mc.player.fallDistance >= 1.0f) {
             fallTicks = 0;
@@ -332,35 +304,6 @@ public class Critical extends Module {
                 && KillAura.target != null;
     }
 
-    private boolean canCritNormal() {
-        if (mc.player == null) return false;
-        return mc.player.fallDistance > 0.0
-                && !mc.player.onGround()
-                && !mc.player.isPassenger()
-                && !mc.player.isSleeping()
-                && !mc.player.isFallFlying()
-                && !mc.player.onClimbable()
-                && !mc.player.isInWater()
-                && !mc.player.isInLava();
-    }
-
-    // ==================== Grim 模式 ====================
-    private void tickGrim() {
-        if (mc.player == null) return;
-        if (this.enemy == null) return;
-
-        if (this.enemy.hurtTime < 2 || this.enemy.distanceTo(mc.player) > 4.0) {
-            this.enemy = null;
-            this.isAttack = false;
-            return;
-        }
-        if (this.isAttack && !mc.player.onGround() && mc.player.fallDistance > 0.0f) {
-            this.releaseSprint();
-            this.isSprint = true;
-        }
-    }
-
-    // ==================== GrimTimer 模式 ====================
     private void tickGrimTimer() {
         if (mc.player == null) return;
 
@@ -395,7 +338,6 @@ public class Critical extends Module {
         }
     }
 
-    // ==================== Stuck / 1.9+ 模式 ====================
     private void tickAdvanced() {
         if (mc.player == null) return;
         if (this.isReleaseWindow()) {
@@ -404,7 +346,6 @@ public class Critical extends Module {
         }
     }
 
-    // ==================== SkipTicks 模式 ====================
     private void updateSkipTicks() {
         if (mc.player == null) return;
 
@@ -424,25 +365,6 @@ public class Critical extends Module {
             }
         } else if (!auraActive) {
             this.skipTicks = 0;
-        }
-    }
-
-    // ==================== Optimize 模式 ====================
-    private void tickOptimize() {
-        if (mc.player == null || this.enemy == null) return;
-
-        if (this.enemy.hurtTime < 2 || this.enemy.distanceTo(mc.player) > 4.0) {
-            this.enemy = null;
-            this.isAttack = false;
-            stopAttack = false;
-            return;
-        }
-        double velocityY = mc.player.getDeltaMovement().y;
-        stopAttack = !mc.player.onGround() && velocityY > 0.0 && velocityY < 0.16;
-        if (this.isAttack && this.isFalling()) {
-            this.releaseSprint();
-            this.debugLog("Balance.");
-            this.balance = true;
         }
     }
 
@@ -510,7 +432,18 @@ public class Critical extends Module {
                 && hit.getEntity() == entity;
     }
 
-    // ==================== 通用 debug（其他模式用） ====================
+    private boolean canCritNormal() {
+        if (mc.player == null) return false;
+        return mc.player.fallDistance > 0.0
+                && !mc.player.onGround()
+                && !mc.player.isPassenger()
+                && !mc.player.isSleeping()
+                && !mc.player.isFallFlying()
+                && !mc.player.onClimbable()
+                && !mc.player.isInWater()
+                && !mc.player.isInLava();
+    }
+
     private void debugLog(String message) {
         if (this.debug.getValue() && mc.player != null && mc.level != null) {
             ChatUtil.print("[Critical] " + message);
@@ -518,10 +451,6 @@ public class Critical extends Module {
     }
 
     // ==================== 【核心】GrimAC 只输出伤害 ====================
-    /**
-     * GrimAC 模式下暴击命中时输出（只显示伤害，统一深红风格）：
-     *   §c[Velocity] §4[Critical] §fDamage: 8.50
-     */
     private void grimDebugLog(LivingEntity target) {
         if (mc.player == null || mc.level == null) return;
         if (!this.debug.getValue()) return;
@@ -533,10 +462,6 @@ public class Critical extends Module {
                 damage));
     }
 
-    /**
-     * 计算本次暴击生效的攻击伤害。
-     *   基础攻击力 * 攻击冷却进度 * 暴击倍率 1.5
-     */
     private float computeCurrentDamage() {
         if (mc.player == null) return 0f;
         float base = (float) mc.player.getAttributeValue(Attributes.ATTACK_DAMAGE);

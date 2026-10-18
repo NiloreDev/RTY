@@ -43,6 +43,7 @@ public class ModuleManager extends ClientBase {
         this.register(new SuperAura());
         this.register(new SuperReach());
         this.register(new AutoOffHand());
+        this.register(new AntiKick());
         this.register(new AutoSoup());
         this.register(new KeepSprint());
         this.register(new Critical());
@@ -93,8 +94,11 @@ public class ModuleManager extends ClientBase {
 
         this.register(new AspectRatio());
         this.register(new BetterChat());
+        this.register(new Wings());
         this.register(new Animations());
         this.register(new InventoryHud());
+        this.register(new FootRing());
+        this.register(new Ambience());
         this.register(new YsmModel());
         this.register(new ChestESP());
         this.register(new EatingHUD());

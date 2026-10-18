@@ -102,9 +102,13 @@ public class ClickGui extends Module {
             case "MusicPlayer" -> "音乐播放器";
             case "AntiTNT" -> "反TNT";
             case "AntiVoid" -> "防虚空";
+            case "Wings" -> "翅膀";
+            case "FootRing" -> "脚底光环";
             case "AntiWeb" -> "反蜘蛛网";
             case "AutoArmor" -> "自动穿甲";
+            case "AntiKick" -> "防踢";
             case "AutoCrossbow" -> "自动弩";
+            case "Ambience" -> "环境氛围";
             case "AutoMLG" -> "自动落地水";
             case "AutoWebPlace" -> "自动放网";
             case "Eagle" -> "边缘潜行";

@@ -1,9 +1,12 @@
 package client.nilore.modules.impl.combat.antikb;
 
-import client.nilore.modules.impl.combat.Velocity;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.Vec3;
 import client.nilore.event.impl.DisconnectEvent;
 import client.nilore.event.impl.EntityHurtEvent;
 import client.nilore.event.impl.EntityRemoveEvent;
@@ -15,10 +18,12 @@ import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
+import client.nilore.modules.impl.combat.Velocity;
 import client.nilore.modules.impl.combat.Backtrack;
 import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.Scaffold;
 import client.nilore.modules.impl.player.NoFall;
+import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
 
@@ -81,6 +86,7 @@ public class JumpResetMode extends AntiKBMode {
         this.resetState();
     }
 
+    // 判断当前是否处于 Velocity 的 JumpReset 模式
     private boolean isJumpResetModeActive() {
         return Velocity.INSTANCE != null
                 && Velocity.INSTANCE.isEnabled()
@@ -99,6 +105,7 @@ public class JumpResetMode extends AntiKBMode {
 
     @Override
     public void onStrafe(StrafeEvent event, int unused) {
+
     }
 
     @Override
@@ -136,12 +143,7 @@ public class JumpResetMode extends AntiKBMode {
     @Override
     public void onReceivePacket(ReceivePacketEvent event) {
         LocalPlayer player = mc.player;
-        if (player == null) return;
-
-        if (!this.isJumpResetModeActive()) {
-            return;
-        }
-
+        if (player == null || !this.isJumpResetModeActive()) return;
         if (this.isSuspended()) {
             this.cancelJumpReset();
             return;
@@ -150,17 +152,17 @@ public class JumpResetMode extends AntiKBMode {
         if (motion.getId() != player.getId()) return;
 
         // ==============================================================
-        // 【核心修改】只要是摔落/水落伤害的特征，就绝对不生效
+        // 摔落/水落伤害的特征拦截
         // ==============================================================
-        if (Velocity.INSTANCE.jumpResetNoFallCheck.getValue()) {
+        if (Velocity.INSTANCE.jumpResetNoFallCheck != null && Velocity.INSTANCE.jumpResetNoFallCheck.getValue()) {
             double vx = motion.getXa() / 8000.0;
             double vz = motion.getZa() / 8000.0;
 
-            // 1. 如果水平速度极小（摔落伤害基本没有水平推力），直接拦截
+            // 1. 如果水平速度极小，直接拦截
             if (Math.abs(vx) < 0.05 && Math.abs(vz) < 0.05) {
                 return;
             }
-            // 2. 如果玩家正在摔落（fallDistance > 0）且速度向下，直接拦截
+            // 2. 如果玩家正在摔落且速度向下，直接拦截
             if (player.fallDistance > 0 && motion.getYa() < 0) {
                 return;
             }
@@ -193,7 +195,7 @@ public class JumpResetMode extends AntiKBMode {
             this.jumpTicks = 1;
         }
 
-        // 唯一输出点
+        // 美化后的聊天栏输出
         this.notifyKnockback(player);
     }
 
@@ -207,17 +209,24 @@ public class JumpResetMode extends AntiKBMode {
 
     @Override
     public void reset() {
+
     }
 
     @Override
     public void onGameTick(GameTickEvent event) {
         LocalPlayer player = mc.player;
-        if (player == null) return;
-        if (!this.isJumpResetModeActive()) return;
+        if (player == null || !this.isJumpResetModeActive()) return;
         if (this.isSuspended()) {
             this.cancelJumpReset();
             return;
         }
+
+        // 预判提前跳 (由于 Velocity 可能没这个开关，默认直接开启)
+        if (this.shouldPredictJump(player)) {
+            isJumping = true;
+            this.jumpTicks = 1;
+        }
+
         if (this.jumpTicks > 0 && !Scaffold.INSTANCE.isEnabled()) {
             if (player.isOnFire()) {
                 this.resetState();
@@ -233,11 +242,32 @@ public class JumpResetMode extends AntiKBMode {
         }
     }
 
+    /**
+     * 预判机制
+     */
+    private boolean shouldPredictJump(LocalPlayer player) {
+        // 如果你在 Velocity 里加了 predict 开关，可以换成 Velocity.INSTANCE.predict.getValue()
+        // if (!Velocity.INSTANCE.predict.getValue()) return false;
+
+        if (this.jumpTicks > 0 || Scaffold.INSTANCE.isEnabled()) return false;
+        if (!player.onGround()) return false;
+        if (!isJumping && player.hurtTime > 0) return true;
+        if (player.hurtTime > 0) return false;
+
+        KillAura aura = KillAura.INSTANCE;
+        Entity target = aura != null && aura.isEnabled() ? KillAura.target : null;
+        if (!(target instanceof LivingEntity living) || !living.isAlive()) return false;
+        if (!living.swinging || living.swingTime > 2) return false;
+
+        Vec3 eyePos = living.getEyePosition(1.0f);
+        Vec3 reachEnd = eyePos.add(living.getLookAngle().scale(RotationUtil.getReachLimit()));
+        return player.getBoundingBox().inflate(0.1).clip(eyePos, reachEnd).isPresent();
+    }
+
     @Override
     public void onTick(TickEvent event) {
         LocalPlayer player = mc.player;
-        if (player == null) return;
-        if (!this.isJumpResetModeActive()) return;
+        if (player == null || !this.isJumpResetModeActive()) return;
         if (this.isSuspended()) {
             this.cancelJumpReset();
             return;
@@ -258,42 +288,36 @@ public class JumpResetMode extends AntiKBMode {
         }
     }
 
+    // =================================================================
+    // === Debug 提示逻辑 ================================
+    // =================================================================
+
     /**
      * 收到击退包时输出一条：
      *   在地面（生效）→ 状态绿色
      *   在空中（失效）→ 状态红色
-     *
-     * 格式：[Velocity] [JumpReset] 状态 | XYZ: x y z | Ground/Air
      */
     private void notifyKnockback(LocalPlayer player) {
         if (Velocity.INSTANCE == null) return;
 
         boolean onGround = player.onGround();
-
         String statusColor = onGround ? "§a" : "§c";
         String statusText  = onGround ? "生效" : "失效";
-
-        String coords = String.format("§7XYZ: §f%.1f %.1f %.1f",
-                player.getX(), player.getY(), player.getZ());
-
+        String coords = String.format("§7XYZ: §f%.1f %.1f %.1f", player.getX(), player.getY(), player.getZ());
         String posLabel = onGround ? "§aGround" : "§cAir";
 
-        String message = statusColor + statusText
-                + " §7| " + coords
-                + " §7| " + posLabel;
-
+        String message = statusColor + statusText + " §7| " + coords + " §7| " + posLabel;
         this.debug(message);
     }
 
     /**
-     * 输出到聊天栏。
-     *   相同消息只输出一次，避免重复刷屏。
-     *   开关由 Velocity 面板的 "Chat JumpReset" 控制。
+     * 输出到聊天栏（相同消息只输出一次，避免刷屏）
      */
     private void debug(String message) {
         if (Velocity.INSTANCE == null) return;
         if (message.equals(this.lastDebugStatus)) return;
         this.lastDebugStatus = message;
+
         Velocity.INSTANCE.debugChat("§c[Velocity] §4[JumpReset] §f" + message);
     }
 }

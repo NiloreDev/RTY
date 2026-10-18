@@ -72,7 +72,12 @@ void ToastNotification::show(const QString& title, const QString& body,
 
     auto* t = new ToastNotification(title, body, kind, durationMs);
     g_current = t;
-    t->show();
+
+    // 【修复 1】: 因为类内部定义了静态的 show(...) 方法，
+    // 它会覆盖（隐藏）QWidget 原本的 show() 方法。
+    // 这里必须显式指定调用父类 QWidget 的 show()。
+    t->QWidget::show();
+
     t->raise();
     t->startAnimations(durationMs);
 }
@@ -435,7 +440,12 @@ void ToastNotification::paintEvent(QPaintEvent*) {
         QFontMetricsF fm(f);
 
         const QString text = title_;
-        const int n = std::max(1, text.size() - 1);
+
+        // 【修复 2】: Qt6 中 text.size() 返回 qsizetype (64位)，而 1 是 int (32位)
+        // std::max 无法推导两个不同类型，导致模板报错。
+        // 这里将其强转为 int 即可解决。
+        const int n = std::max(1, static_cast<int>(text.size()) - 1);
+
         qreal x = r.left() + 92;
         const qreal baseY = r.top() + 40;
 
