@@ -142,15 +142,15 @@ public class KillAura extends Module {
             () -> !(Boolean) this.infSwitch.getValue());
     public final NumberSetting switchDelay = new NumberSetting("Switch Delay (Attack Times)", 1.0, 1.0, 10.0, 1.0);
 
-    // 新增 FoV 开关和范围设置
-    public final BooleanSetting fovEnabled = new BooleanSetting("FoV", true);
-    public final NumberSetting fovValue   = new NumberSetting("FoV Range", 360.0, 0.0, 360.0, 1.0, () -> this.fovEnabled.getValue());
+    // 【修改点 1】新增 FoV Limit 开关，并将 fov 范围修改为 0.0 ~ 360.0
+    public final BooleanSetting fovLimit = new BooleanSetting("FoV Limit", true);
+    public final NumberSetting fov         = new NumberSetting("FoV", 360.0, 0.0, 360.0, 1.0, () -> this.fovLimit.getValue());
 
     public final NumberSetting hurtTime    = new NumberSetting("Hurt Time", 10.0, 0.0, 10.0, 1.0);
     public final ModeSetting delayMode    = new ModeSetting("Delay Mode", "1.8", "1.9").withDefault("1.8");
 
     public final ModeSetting targetMode   = new ModeSetting("Target Mode", "Single", "Switch", "Multiple").withDefault("Single");
-    public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "None").withDefault("FoV");
+    public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "LivingTime", "Armor", "None").withDefault("FoV");
 
     public final BooleanSetting predictionEnabled  = new BooleanSetting("Prediction", true);
     public final NumberSetting enemyDelayThreshold = new NumberSetting("Enemy Delay Ticks", 4, 1, 5, 1,
@@ -1872,8 +1872,8 @@ public class KillAura extends Module {
             if (!skipWallCheck && !this.hasVisibleHitPoint(entity)) return false;
         }
 
-        if (this.fovEnabled.getValue()) {
-            return RotationUtil.isEntityInFov(entity, this.fovValue.getValue().floatValue() / 2.0f);
+        if (this.fovLimit.getValue()) {
+            return RotationUtil.isEntityInFov(entity, this.fov.getValue().floatValue() / 2.0f);
         }
         return true;
     }
@@ -2093,20 +2093,21 @@ public class KillAura extends Module {
         if (mc.player == null || mc.level == null) return new ArrayList<>();
         AABB box = mc.player.getBoundingBox().inflate(Math.max(this.reach.getValue().doubleValue(), 3.05));
 
-        // 根据 fovEnabled 判断是否限制视野（半角）
-        double fovHalf = this.fovEnabled.getValue() ? this.fovValue.getValue().doubleValue() / 2.0 : 180.0;
+        // 【修改点 3】这里也根据 fovLimit 判断是否限制视野
+        double fov = this.fovLimit.getValue() ? this.fov.getValue().doubleValue() : 360.0;
 
         List<Entity> possibleTargets = new ArrayList<>();
         for (Entity entity : mc.level.entitiesForRendering()) {
             if (!box.intersects(entity.getBoundingBox())) continue;
             if (!this.isValidAttack(entity)) continue;
-            if (!RotationUtil.isEntityInFov(entity, fovHalf)) continue;
+            if (!RotationUtil.isEntityInFov(entity, fov)) continue;
             possibleTargets.add(entity);
         }
-
         if (this.priorityMode.is("Distance")) possibleTargets.sort(BY_DISTANCE);
         else if (this.priorityMode.is("FoV")) possibleTargets.sort(BY_ANGLE);
         else if (this.priorityMode.is("Health")) possibleTargets.sort(BY_HEALTH);
+        else if (this.priorityMode.is("LivingTime")) possibleTargets.sort(BY_LIVING_TIME);
+        else if (this.priorityMode.is("Armor")) possibleTargets.sort(BY_ARMOR);
 
         if (this.preferBaby.getValue() && hasBaby(possibleTargets)) possibleTargets.removeIf(KillAura::isNotBaby);
         possibleTargets.sort(BY_CRYSTAL_PRIORITY);
@@ -2128,11 +2129,15 @@ public class KillAura extends Module {
     private static final Comparator<Entity> BY_DISTANCE = Comparator.comparingDouble(KillAura::getDistanceToPlayer);
     private static final Comparator<Entity> BY_ANGLE = Comparator.comparingDouble(KillAura::getAngleDiffToTarget);
     private static final Comparator<Entity> BY_HEALTH = Comparator.comparingDouble(KillAura::getEntityHealth);
+    private static final Comparator<Entity> BY_LIVING_TIME = Comparator.comparingInt(KillAura::getEntityLivingTime).reversed();
+    private static final Comparator<Entity> BY_ARMOR = Comparator.comparingDouble(KillAura::getEntityArmor);
     private static final Comparator<Entity> BY_CRYSTAL_PRIORITY = Comparator.comparing(KillAura::getCrystalPriority);
     private static final Comparator<Entity> BY_OUT_OF_REACH = Comparator.comparingInt(KillAura::getOutOfReachRank);
 
     private static int getOutOfReachRank(Entity entity) { return RotationUtil.isWithinReach(entity) ? 0 : 1; }
     private static double getEntityHealth(Entity entity) { return entity instanceof LivingEntity le ? le.getHealth() + le.getAbsorptionAmount() : 0.0; }
+    private static int getEntityLivingTime(Entity entity) { return entity.tickCount; }
+    private static double getEntityArmor(Entity entity) { return entity instanceof LivingEntity le ? le.getArmorValue() : 0.0; }
     private static double getAngleDiffToTarget(Entity entity) {
         float baseYaw = RotationHandler.targetRotation != null ? RotationHandler.targetRotation.getYaw() : mc.player.getYRot();
         return RotationUtil.angleDiff(baseYaw, RotationUtil.entityRotation(entity).getYaw());
