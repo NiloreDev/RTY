@@ -145,6 +145,11 @@ public class Gapple extends Module {
     }
 
     @Override
+    public void onTick() {
+        
+    }
+
+    @Override
     public String getDisplayName() {
         return "§fGapple";
     }
