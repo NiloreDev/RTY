@@ -43,13 +43,6 @@ qt_add_executable(OpenNiloreLoader WIN32
     src/loader_settings.h
     src/hwid_spoof.cpp
     src/hwid_spoof.h
-<<<<<<< HEAD
-=======
-
-    src/hwid_spoof_settings.cpp
-    src/hwid_spoof_settings.h
-
->>>>>>> de929dd8345f11926cc930b41a2e1efc97a775fc
     src/process_list.cpp
     src/injector.cpp
     src/early_inject.cpp
@@ -78,19 +71,7 @@ target_link_libraries(OpenNiloreLoader PRIVATE
     psapi
     shlwapi
     user32
-<<<<<<< HEAD
     dwmapi   # DwmSetWindowAttribute for Win11 rounded corners on frameless window
-=======
-    dwmapi
-    ole32
-    oleaut32
-
-    # --- 显式补全（MSVC 默认库已含，但显式声明跨工具链更安全） ---
-    # shell32   : SHGetKnownFolderPath          (loader_settings.cpp)
-    # advapi32  : RegOpenKeyExW / RegQueryValueExW / RegCloseKey (hwid_spoof.cpp)
-    shell32
-    advapi32
->>>>>>> de929dd8345f11926cc930b41a2e1efc97a775fc
 )
 
 # Build-time git revision passed in by Gradle (gradle.properties /
