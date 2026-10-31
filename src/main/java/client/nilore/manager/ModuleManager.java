@@ -86,6 +86,7 @@ public class ModuleManager extends ClientBase {
         this.register(new InvManager());
         this.register(new AutoWebPlace());
         this.register(new ChestStealer());
+        this.register(new Gapple());
         this.register(new GhostHand());
         this.register(new Helper());
         this.register(new InventoryManager());
