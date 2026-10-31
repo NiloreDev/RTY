@@ -159,9 +159,13 @@ public class Velocity extends Module {
                     .withDefault("JumpRest")
                     .withVisibility(() -> mode.is("Velocity"));
 
-    public final BooleanSetting rotate =
-            new BooleanSetting("Rotate", true,
-                    () -> isEffectiveMode("JumpReset") || isEffectiveMode("Mix"));
+    public final BooleanSetting rotate = new BooleanSetting("Rotate", true, () -> isEffectiveMode("JumpReset"));
+    public final BooleanSetting followDirection = new BooleanSetting("Follow Direction", true, () -> isEffectiveMode("JumpReset"));
+    public final BooleanSetting predict = new BooleanSetting("Predict", false, () -> isEffectiveMode("JumpReset"));
+    public final NumberSetting rotateTicks = new NumberSetting("Rotate Ticks", 12, 3, 20, 1, () -> isEffectiveMode("JumpReset") && (this.rotate.getValue() || this.followDirection.getValue()));
+
+    public final BooleanSetting jumpResetDebug = new BooleanSetting("Debug", false, () -> isEffectiveMode("JumpReset"));
+    public final BooleanSetting jumpResetNoFallCheck = new BooleanSetting("NoFall Check", true, () -> isEffectiveMode("JumpReset"));
 
     public final BooleanSetting tryAttack =
             new BooleanSetting("Try Attack", false,
@@ -171,118 +175,32 @@ public class Velocity extends Module {
             new BooleanSetting("Movement Override", false,
                     () -> isEffectiveMode("Mix"));
 
-    public final BooleanSetting followDirection =
-            new BooleanSetting("Follow Direction", true,
-                    () -> isEffectiveMode("JumpReset"));
-
-    /** 预判提前跳（新增） */
-    public final BooleanSetting predict =
-            new BooleanSetting("Predict", false,
-                    () -> isEffectiveMode("JumpReset"));
-
-    /** Jump Reset 是否过滤摔落/水落伤害的速度包 */
-    public final BooleanSetting jumpResetNoFallCheck =
-            new BooleanSetting("JumpReset NoFall Check", true,
-                    () -> isEffectiveMode("JumpReset"));
-
-    public final NumberSetting rotateTicks =
-            new NumberSetting("Rotate Ticks", 12, 3, 20, 1,
-                    () -> isEffectiveMode("JumpReset")
-                            && (this.rotate.getValue() || this.followDirection.getValue()));
-
-    // =================================================================
-    // === ReduceXZ 共用设置（Velocity > ReduceXZ 与 Legit 共享） ======
-    // =================================================================
-
-    public final BooleanSetting autoAttackCount =
-            new BooleanSetting("Auto Count", true, this::isReduceXZ);
-
-    /** ReduceXZ 与 Legit 共用，语义是"计数阶段攻击次数" */
-    public final NumberSetting attackAmount =
-            new NumberSetting("Attack Amount", 5.0, 1.0, 20.0, 1.0,
-                    () -> (isReduceXZ() && !this.autoAttackCount.getValue()) || isLegit());
-
-    public final BooleanSetting instantAttack =
-            new BooleanSetting("Instant Hits", false, this::isReduceXZ);
-
-    public final BooleanSetting sprintStateCheck =
-            new BooleanSetting("Require Sprint", false, this::isReduceXZ);
-
-    /** Need KillAura —— ReduceXZ 与 Legit 共用 */
-    public final BooleanSetting isReduceModeNeedKillAura =
-            new BooleanSetting("Need KillAura", true,
-                    () -> isReduceXZ() || isLegit());
-
-    /** Auto Forward —— ReduceXZ 与 Legit 共用 */
-    public final BooleanSetting autoForwards =
-            new BooleanSetting("Auto Forward", true,
-                    () -> isReduceXZ() || isLegit());
-
     // =================================================================
     // === ReduceXZ 专用设置 ==========================================
     // =================================================================
 
-    public final NumberSetting isNoXZAltAttackAmount =
-            new NumberSetting("Attack Counter", 4.0, 0.0, 8.0, 1, this::isReduceXZ);
+    public final BooleanSetting delayEnable = new BooleanSetting("Delay", true, () -> isReduceXZ());
+    public final NumberSetting maxDelayTicks = new NumberSetting("Max Delay Ticks", 11.9, 1.0, 120.0, 1.0, () -> isReduceXZ() && this.delayEnable.getValue());
+    public final BooleanSetting autoForwards = new BooleanSetting("Auto Forwards", false, () -> isReduceXZ());
+    public final BooleanSetting requireKillAura = new BooleanSetting("Require KillAura", true, () -> isReduceXZ());
+    public final BooleanSetting jumpReset = new BooleanSetting("Jump Reset", true, () -> isReduceXZ());
+    public final NumberSetting attackAmount = new NumberSetting("Attack Amount", 5, 0.0, 20.0, 1, () -> isReduceXZ());
 
-    public final NumberSetting isNoXZAltAttackRange =
-            new NumberSetting("Attack Range", 3.0, 3.0, 4.0, 0.1, this::isReduceXZ);
+    // 改名 + 新增
+    public final BooleanSetting alinkReader = new BooleanSetting("ALink Reader", true, () -> isReduceXZ());
+    public final BooleanSetting keepShowing = new BooleanSetting("Keep Showing", false, () -> isReduceXZ() && this.alinkReader.getValue());
 
-    public final BooleanSetting isNoXZAltDelayEnable =
-            new BooleanSetting("Delay", true, this::isReduceXZ);
-
-    public final NumberSetting isNoXZAltMaxDelayTicks =
-            new NumberSetting("Max Delay Ticks", 10.0, 1.0, 120.0, 1.0,
-                    () -> isReduceXZ() && isNoXZAltDelayEnable.getValue());
-
-    public final NumberSetting isNoXZAltBufferRange =
-            new NumberSetting("Buffer Range", 2.8, 2.0, 3.0, 0.1,
-                    () -> isReduceXZ() && isNoXZAltDelayEnable.getValue());
-
-    public final ModeSetting isNoXZAltReduceMode =
-            new ModeSetting("Release Mode", "Sprint", "Sprint", "Ground")
-                    .withDefault("Sprint")
-                    .withVisibility(() -> isReduceXZ() && isNoXZAltDelayEnable.getValue());
-
-    public final BooleanSetting isNoXZAltSideStrafe =
-            new BooleanSetting("SideStrafe", true,
-                    () -> isReduceXZ() && isNoXZAltDelayEnable.getValue());
-
-    public final NumberSetting isNoXZAltReach =
-            new NumberSetting("Reach", 3.0, 1.0, 3.0, 0.05, this::isReduceXZ);
-
-    public final BooleanSetting isNoXZAltDebugLog =
-            new BooleanSetting("Debug Log", false, this::isReduceXZ);
+    public final BooleanSetting targetEsp = new BooleanSetting("Target ESP", true, () -> isReduceXZ());
 
     // =================================================================
-    // === Legit 设置（Velocity > Legit 子模式） =======================
+    // === Legit 专用设置 =============================================
     // =================================================================
 
-    /** Legit 延迟开关：关闭时纯计数，开启时延迟窗口 */
     public final BooleanSetting legitDelayEnable =
             new BooleanSetting("Delay", true, this::isLegit);
 
-    /** Legit 最大延迟 tick 数（仅在 Delay 开启时可见） */
-    public final NumberSetting maxDelayTicks =
-            new NumberSetting("Max Delay Ticks", 10.0, 1.0, 120.0, 1.0,
-                    () -> isLegit() && legitDelayEnable.getValue());
-
-    /** Jump Reset 同时服务 Legit 与 ReduceXZ */
-    public final BooleanSetting jumpReset =
-            new BooleanSetting("Jump Reset", false,
-                    () -> isLegit() || isReduceXZ());
-
-    /** Legit 进度条渲染开关 */
-    public final BooleanSetting renderBar =
-            new BooleanSetting("Render Bar", false, this::isLegit);
-
-    /** Legit Target ESP 开关 */
-    public final BooleanSetting targetEsp =
-            new BooleanSetting("Target ESP", false, this::isLegit);
-
-    /** Debug Log：Legit 与 Velocity 各模式共用 */
     public final BooleanSetting debugLog =
-            new BooleanSetting("Debug Log", false);
+            new BooleanSetting("Debug Log", true);
 
     // =================================================================
     // === Naven 设置 =================================================
@@ -319,7 +237,6 @@ public class Velocity extends Module {
             new NumberSetting("ALINK Y", 18.0, 0.0, 500.0, 1.0,
                     () -> mode.is("Naven") && !navenMode.is("JumpReset"));
 
-    /** Pace Check 只服务 ReduceXZ / Naven，Legit 下隐藏 */
     public final BooleanSetting paceCheck =
             new BooleanSetting("Pace Check", true,
                     () -> isReduceXZ() || mode.is("Naven"));
@@ -459,6 +376,42 @@ public class Velocity extends Module {
             return eff.equalsIgnoreCase("ReduceXZ") || eff.equalsIgnoreCase("Reduce");
         }
         return eff.equalsIgnoreCase(name);
+    }
+
+    /**
+     * 判断 Velocity 模块当前是否处于“反击/抵消”活跃状态
+     * 供外部其他模块（如 KillAura）静态调用
+     */
+    public static boolean isCountering() {
+        if (INSTANCE == null || !INSTANCE.isEnabled()) {
+            return false;
+        }
+        // 默认为启用了需要主动反击的模式时返回 true
+        return INSTANCE.isEffectiveMode("JumpReset")
+                || INSTANCE.isEffectiveMode("Mix")
+                || INSTANCE.isEffectiveMode("ReduceXZ")
+                || INSTANCE.mode.is("Opal")
+                || INSTANCE.mode.is("Naven");
+    }
+
+    /**
+     * 判断 Velocity 模块当前是否处于“延迟窗口”期间
+     * 供外部其他模块静态调用
+     */
+    public static boolean isInDelayWindow() {
+        if (INSTANCE == null || !INSTANCE.isEnabled()) {
+            return false;
+        }
+        if (INSTANCE.isReduceXZ() && INSTANCE.delayEnable.getValue()) {
+            return true;
+        }
+        if (INSTANCE.mode.is("Naven") && INSTANCE.navenReduceMode.is("Delay")) {
+            return true;
+        }
+        if (INSTANCE.mode.is("EpsilonDelay")) {
+            return true;
+        }
+        return false;
     }
 
     @Override

@@ -132,6 +132,9 @@ public class KillAura extends Module {
 
     public final BooleanSetting silentMode = new BooleanSetting("Silent", false);
 
+    // aimRange: 锁定/瞄准范围
+    // attackRange: 挥刀范围（大致"看起来能打到"）
+    // reach: 真实命中距离（真正控制攻击距离）
     public final NumberSetting aimRange    = new NumberSetting("Aim Range", 4.0, 1.0, 8.0, 0.1);
     public final NumberSetting attackRange = new NumberSetting("Attack Range", 3.5, 1.0, 8.0, 0.1);
     public final NumberSetting reach       = new NumberSetting("Reach", 3.0, 1.0, 10.0, 0.1);
@@ -142,15 +145,14 @@ public class KillAura extends Module {
             () -> !(Boolean) this.infSwitch.getValue());
     public final NumberSetting switchDelay = new NumberSetting("Switch Delay (Attack Times)", 1.0, 1.0, 10.0, 1.0);
 
-    // 【修改点 1】新增 FoV Limit 开关，并将 fov 范围修改为 0.0 ~ 360.0
-    public final BooleanSetting fovLimit = new BooleanSetting("FoV Limit", true);
-    public final NumberSetting fov         = new NumberSetting("FoV", 360.0, 0.0, 360.0, 1.0, () -> this.fovLimit.getValue());
+    public final BooleanSetting fovEnabled = new BooleanSetting("FoV", true);
+    public final NumberSetting fovValue   = new NumberSetting("FoV Range", 360.0, 0.0, 360.0, 1.0, () -> this.fovEnabled.getValue());
 
     public final NumberSetting hurtTime    = new NumberSetting("Hurt Time", 10.0, 0.0, 10.0, 1.0);
     public final ModeSetting delayMode    = new ModeSetting("Delay Mode", "1.8", "1.9").withDefault("1.8");
 
     public final ModeSetting targetMode   = new ModeSetting("Target Mode", "Single", "Switch", "Multiple").withDefault("Single");
-    public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "LivingTime", "Armor", "None").withDefault("FoV");
+    public final ModeSetting priorityMode = new ModeSetting("Priority", "Distance", "FoV", "Health", "None").withDefault("FoV");
 
     public final BooleanSetting predictionEnabled  = new BooleanSetting("Prediction", true);
     public final NumberSetting enemyDelayThreshold = new NumberSetting("Enemy Delay Ticks", 4, 1, 5, 1,
@@ -218,7 +220,8 @@ public class KillAura extends Module {
     private int shieldBreakAttempts = 0;
     private long lastShieldBreakTime = 0;
     private int shieldBreakerSwitchTick = 0;
-    private static final long SHIELD_BREAK_COOLDOWN_MS = 50;
+    // 新增：破盾攻击后延迟切回的 tick 计数
+    private int shieldBreakRestoreDelay = 0;
 
     public KillAura() {
         super("KillAura", Category.COMBAT);
@@ -270,6 +273,7 @@ public class KillAura extends Module {
         this.shieldBreakAttempts = 0;
         this.lastShieldBreakTime = 0;
         this.shieldBreakerSwitchTick = 0;
+        this.shieldBreakRestoreDelay = 0;
         super.onEnable();
     }
 
@@ -290,6 +294,7 @@ public class KillAura extends Module {
         this.isBreakingShield = false;
         this.shieldBreakAttempts = 0;
         this.shieldBreakerSwitchTick = 0;
+        this.shieldBreakRestoreDelay = 0;
         attackLockTick = -1L;
         restoreSlot();
         super.onDisable();
@@ -339,10 +344,11 @@ public class KillAura extends Module {
         }
 
         if (mc.player != null) {
-            double currentReach = RotationUtil.getReachLimit();
-            if (currentReach <= 0) {
-                currentReach = Math.min(this.reach.getValue().doubleValue(), this.getEffectiveAttackRange());
-            }
+            // 射线检测距离取 reachLimit 与有效攻击范围最大值，保证能覆盖真实命中范围
+            double currentReach = Math.max(
+                    RotationUtil.getReachLimit(),
+                    this.getEffectiveAttackRange()
+            );
             HitResult probe = RotationUtil.rayTraceForAim(this.rotation, currentReach);
             if (probe instanceof EntityHitResult hit) {
                 Entity hitEntity = hit.getEntity();
@@ -1551,7 +1557,8 @@ public class KillAura extends Module {
                                 : new Rotation(mc.player.getYRot(), mc.player.getXRot());
                         double speed = Mth.clamp(this.rotationSpeed.getValue().doubleValue(),
                                 this.rotationSpeed.getMin().doubleValue(), this.rotationSpeed.getMax().doubleValue());
-                        this.rotation = this.computeRotation(aimingTarget, from, speed, Math.max(this.reach.getValue().doubleValue(), 3.05));
+                        double rayRange = Math.max(this.getEffectiveAttackRange(), this.reach.getValue().doubleValue());
+                        this.rotation = this.computeRotation(aimingTarget, from, speed, Math.max(rayRange, 3.05));
                         if (this.rotation == null) this.rotation = desiredAimRotation;
                     }
                 } else {
@@ -1586,44 +1593,15 @@ public class KillAura extends Module {
         if (this.targetIndex > targetList.size() - 1 || !isSwitch) this.targetIndex = 0;
         target = targetList.get(this.targetIndex);
 
-        // 自动破盾逻辑
-        if (this.autoShieldBreaker.getValue()) {
-            if (this.shieldBreakerTimer > 0) this.shieldBreakerTimer--;
-            boolean targetBlocking = target != null && isTargetBlocking(target);
-            if (targetBlocking) {
-                int axeSlot = findAxeSlot();
-                if (axeSlot != -1) {
-                    if (this.previousSlot == -1 && !this.isBreakingShield) {
-                        this.previousSlot = mc.player.getInventory().selected;
-                        this.shieldBreakerSwitchTick = 0;
-                    }
-                    int switchDelay = this.shieldBreakerSwitchDelay.getValue().intValue();
-                    if (this.shieldBreakerSwitchTick < switchDelay) {
-                        this.shieldBreakerSwitchTick++;
-                        return;
-                    }
-                    if (mc.player.getInventory().selected != axeSlot) {
-                        mc.player.getInventory().selected = axeSlot;
-                        this.isBreakingShield = true;
-                        this.shieldBreakerSwitchTick = 0;
-                    }
-                    if (this.isBreakingShield && mc.player.getInventory().selected == axeSlot) {
-                        float breakerCPS = this.shieldBreakerCPS.getValue().floatValue();
-                        breakerCPS = Mth.clamp(breakerCPS, 1.0f, 20.0f);
-                        this.attacks += breakerCPS / 20.0f;
-                        this.shieldBreakAttempts++;
-                    }
-                } else {
-                    if (this.isBreakingShield) restoreSlot();
-                }
-            } else {
-                if (this.isBreakingShield) {
-                    restoreSlot();
-                    this.shieldBreakerTimer = this.shieldBreakerCooldown.getValue().intValue();
-                }
-                if (this.previousSlot != -1 && !this.isBreakingShield && this.switchBackAfterBreak.getValue()) {
+        // ===== 破盾状态机：只负责"等待、恢复"，真正的破盾逻辑在 onPreMotion =====
+        if (this.autoShieldBreaker.getValue() && this.isBreakingShield) {
+            if (this.shieldBreakerSwitchTick > 0) this.shieldBreakerSwitchTick--;
+            if (this.shieldBreakRestoreDelay > 0) {
+                if (--this.shieldBreakRestoreDelay == 0) {
                     restoreSlot();
                 }
+            } else if (this.shieldBreakerSwitchTick == 0 && (target == null || !isTargetBlocking(target))) {
+                restoreSlot();
             }
         }
 
@@ -1636,7 +1614,7 @@ public class KillAura extends Module {
             float apsValue = this.maxAps.getValue().floatValue();
             float minApsValue = this.minAps.getValue().floatValue();
             if (AntiKBMode.isAttacking) {
-                int kbAttackAmount = Velocity.INSTANCE != null ? Velocity.INSTANCE.isNoXZAltAttackAmount.getValue().intValue() : 0;
+                int kbAttackAmount = Velocity.INSTANCE != null ? Velocity.INSTANCE.attackAmount.getValue().intValue() : 0;
                 apsValue -= kbAttackAmount;
                 minApsValue -= kbAttackAmount;
             }
@@ -1645,7 +1623,7 @@ public class KillAura extends Module {
             float apsValue = this.maxAps.getValue().floatValue();
             float minApsValue = this.minAps.getValue().floatValue();
             if (AntiKBMode.isAttacking) {
-                int kbAttackAmount = Velocity.INSTANCE != null ? Velocity.INSTANCE.isNoXZAltAttackAmount.getValue().intValue() : 0;
+                int kbAttackAmount = Velocity.INSTANCE != null ? Velocity.INSTANCE.attackAmount.getValue().intValue() : 0;
                 apsValue -= kbAttackAmount;
                 minApsValue -= kbAttackAmount;
             }
@@ -1661,6 +1639,7 @@ public class KillAura extends Module {
             return;
         }
 
+        // ===== 破盾：进入 onPreMotion 阶段处理切换 → 等待 → 攻击 → 延迟切回 =====
         if (this.autoShieldBreaker.getValue() && target != null) {
             if (isTargetBlocking(target)) {
                 if (this.isWithinReach(target)) {
@@ -1725,7 +1704,7 @@ public class KillAura extends Module {
         if (KeepSprint.INSTANCE != null && KeepSprint.INSTANCE.isEnabled() && mc.player.isSprinting() && !ReduceXZMode.handlingVelocity) {
             return false;
         }
-        return RotationUtil.isWithinReach(target);
+        return this.isWithinReach(target);
     }
 
     private boolean ignoreBlocksAt(Entity entity) {
@@ -1794,7 +1773,8 @@ public class KillAura extends Module {
             int attacked = 0;
             for (Entity entity : targetList) {
                 if (mc.player == null) break;
-                if (!RotationUtil.isWithinReach(entity)) continue;
+                // 改为使用本地 isWithinReach（真正命中距离用 reach 判定）
+                if (!this.isWithinReach(entity)) continue;
                 if (!this.ignoreBlocksAt(entity) && !RotationUtil.canSeeAnyPoint(entity)) continue;
                 if (this.attackEntity(entity)) attacked++;
                 if (attacked >= limit) break;
@@ -1872,10 +1852,25 @@ public class KillAura extends Module {
             if (!skipWallCheck && !this.hasVisibleHitPoint(entity)) return false;
         }
 
-        if (this.fovLimit.getValue()) {
-            return RotationUtil.isEntityInFov(entity, this.fov.getValue().floatValue() / 2.0f);
-        }
-        return true;
+        return this.isInFov(entity);
+    }
+
+    private boolean isInFov(Entity entity) {
+        if (!this.fovEnabled.getValue()) return true;
+        float fov = this.fovValue.getValue().floatValue();
+        if (fov >= 360.0f) return true;
+        if (fov <= 0.0f) return false;
+        if (mc.player == null || entity == null) return false;
+
+        Vec3 eye = mc.player.getEyePosition(1.0f);
+        Vec3 target = entity.position().add(0.0, entity.getBbHeight() * 0.5, 0.0);
+        Vec3 dir = target.subtract(eye);
+        if (dir.lengthSqr() < 1.0E-6) return true;
+
+        Vec3 look = mc.player.getLookAngle();
+        double dot = look.normalize().dot(dir.normalize());
+        double angle = Math.toDegrees(Math.acos(Mth.clamp(dot, -1.0, 1.0)));
+        return angle <= fov / 2.0;
     }
 
     private boolean hasVisibleHitPoint(Entity entity) {
@@ -1914,17 +1909,26 @@ public class KillAura extends Module {
         return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
+    /**
+     * 有效攻击范围（挥刀范围）。真正命中距离由 isWithinReach() 使用 reach 控制。
+     * 1.9 模式强制 3.0。
+     */
     private float getEffectiveAttackRange() {
         if (this.use1_9Cooldown.getValue()) return FORCED_1_9_RANGE;
-        return Math.min(this.attackRange.getValue().floatValue(), this.aimRange.getValue().floatValue());
+        return Math.max(this.attackRange.getValue().floatValue(), this.reach.getValue().floatValue());
     }
 
     private boolean isWithinAttackRange(Entity entity) {
         return this.getRangeDistance(entity) <= this.getEffectiveAttackRange();
     }
 
+    /**
+     * 真正命中距离：由 Reach 设置独立控制。
+     * 距离超过 Reach 时会挥刀但不会发包（不命中），符合"reach 才是真正的攻击距离"。
+     */
     private boolean isWithinReach(Entity entity) {
-        return this.getRangeDistance(entity) <= Math.min(this.reach.getValue().floatValue(), this.getEffectiveAttackRange());
+        if (mc.player == null || entity == null) return false;
+        return this.getRangeDistance(entity) <= this.reach.getValue().floatValue();
     }
 
     private double predictDistance(Entity entity) {
@@ -2091,23 +2095,23 @@ public class KillAura extends Module {
 
     private List<Entity> getTargets() {
         if (mc.player == null || mc.level == null) return new ArrayList<>();
-        AABB box = mc.player.getBoundingBox().inflate(Math.max(this.reach.getValue().doubleValue(), 3.05));
 
-        // 【修改点 3】这里也根据 fovLimit 判断是否限制视野
-        double fov = this.fovLimit.getValue() ? this.fov.getValue().doubleValue() : 360.0;
+        double searchRange = Math.max(
+                Math.max(this.aimRange.getValue().doubleValue(), this.attackRange.getValue().doubleValue()),
+                this.reach.getValue().doubleValue()
+        ) + 0.5;
+        AABB box = mc.player.getBoundingBox().inflate(searchRange);
 
         List<Entity> possibleTargets = new ArrayList<>();
         for (Entity entity : mc.level.entitiesForRendering()) {
             if (!box.intersects(entity.getBoundingBox())) continue;
             if (!this.isValidAttack(entity)) continue;
-            if (!RotationUtil.isEntityInFov(entity, fov)) continue;
             possibleTargets.add(entity);
         }
+
         if (this.priorityMode.is("Distance")) possibleTargets.sort(BY_DISTANCE);
         else if (this.priorityMode.is("FoV")) possibleTargets.sort(BY_ANGLE);
         else if (this.priorityMode.is("Health")) possibleTargets.sort(BY_HEALTH);
-        else if (this.priorityMode.is("LivingTime")) possibleTargets.sort(BY_LIVING_TIME);
-        else if (this.priorityMode.is("Armor")) possibleTargets.sort(BY_ARMOR);
 
         if (this.preferBaby.getValue() && hasBaby(possibleTargets)) possibleTargets.removeIf(KillAura::isNotBaby);
         possibleTargets.sort(BY_CRYSTAL_PRIORITY);
@@ -2129,22 +2133,21 @@ public class KillAura extends Module {
     private static final Comparator<Entity> BY_DISTANCE = Comparator.comparingDouble(KillAura::getDistanceToPlayer);
     private static final Comparator<Entity> BY_ANGLE = Comparator.comparingDouble(KillAura::getAngleDiffToTarget);
     private static final Comparator<Entity> BY_HEALTH = Comparator.comparingDouble(KillAura::getEntityHealth);
-    private static final Comparator<Entity> BY_LIVING_TIME = Comparator.comparingInt(KillAura::getEntityLivingTime).reversed();
-    private static final Comparator<Entity> BY_ARMOR = Comparator.comparingDouble(KillAura::getEntityArmor);
     private static final Comparator<Entity> BY_CRYSTAL_PRIORITY = Comparator.comparing(KillAura::getCrystalPriority);
     private static final Comparator<Entity> BY_OUT_OF_REACH = Comparator.comparingInt(KillAura::getOutOfReachRank);
 
     private static int getOutOfReachRank(Entity entity) { return RotationUtil.isWithinReach(entity) ? 0 : 1; }
     private static double getEntityHealth(Entity entity) { return entity instanceof LivingEntity le ? le.getHealth() + le.getAbsorptionAmount() : 0.0; }
-    private static int getEntityLivingTime(Entity entity) { return entity.tickCount; }
-    private static double getEntityArmor(Entity entity) { return entity instanceof LivingEntity le ? le.getArmorValue() : 0.0; }
     private static double getAngleDiffToTarget(Entity entity) {
         float baseYaw = RotationHandler.targetRotation != null ? RotationHandler.targetRotation.getYaw() : mc.player.getYRot();
         return RotationUtil.angleDiff(baseYaw, RotationUtil.entityRotation(entity).getYaw());
     }
     private static double getDistanceToPlayer(Entity entity) { return entity.distanceTo(mc.player); }
 
-    // 自动破盾辅助方法
+    // ==========================================
+    // === 破盾 (Auto Shield Breaker) ===========
+    // ==========================================
+
     private boolean isTargetBlocking(Entity target) {
         if (!(target instanceof LivingEntity living)) return false;
         if (!living.isUsingItem()) return false;
@@ -2161,38 +2164,70 @@ public class KillAura extends Module {
 
     private void restoreSlot() {
         if (mc.player == null) return;
-        if (this.previousSlot != -1 && this.switchBackAfterBreak.getValue()) mc.player.getInventory().selected = this.previousSlot;
-        this.previousSlot = -1; this.isBreakingShield = false;
-        this.shieldBreakAttempts = 0; this.shieldBreakerSwitchTick = 0;
+        if (this.previousSlot != -1 && this.switchBackAfterBreak.getValue()) {
+            mc.player.getInventory().selected = this.previousSlot;
+        }
+        this.previousSlot = -1;
+        this.isBreakingShield = false;
+        this.shieldBreakAttempts = 0;
+        this.shieldBreakerSwitchTick = 0;
+        this.shieldBreakRestoreDelay = 0;
     }
 
     private void cancelAttackCooldownForShieldBreak() {
         if (mc.player != null) mc.player.resetAttackStrengthTicker();
     }
 
+    /**
+     * 破盾攻击。
+     *
+     * 流程（保证 C09 切换包先于 C02 攻击包发出）：
+     *   1) 未拿斧头 → 切到斧头槽 → switchTick = 2 → 本 tick 结束
+     *   2) 拿斧头但 switchTick > 0 → 等待（onTick 递减）
+     *   3) switchTick == 0 → 发攻击（attackWithKeepSprint）
+     *   4) 攻击后：switchBack=true → shieldBreakRestoreDelay = 2 → 2 tick 后切回
+     *            switchBack=false → 保持斧头（下次直接攻击）
+     * 破盾最小间隔由 Shield Breaker CPS 控制，真正生效。
+     */
     private boolean performShieldBreakAttack(Entity entity) {
         if (mc.player == null || mc.gameMode == null || entity == null) return false;
         if (!isTargetBlocking(entity)) return false;
         if (!this.isWithinReach(entity)) return false;
-        long currentTime = System.currentTimeMillis();
-        if (currentTime - this.lastShieldBreakTime < SHIELD_BREAK_COOLDOWN_MS) return false;
 
+        long currentTime = System.currentTimeMillis();
+        float cps = Mth.clamp(this.shieldBreakerCPS.getValue().floatValue(), 1.0f, 20.0f);
+        long cooldownMs = (long) (1000.0f / cps);
+        if (currentTime - this.lastShieldBreakTime < cooldownMs) return false;
+
+        // 第 1 步：没拿斧头，切换，下一 tick 才能攻击
         if (!(mc.player.getMainHandItem().getItem() instanceof AxeItem)) {
             int axeSlot = findAxeSlot();
             if (axeSlot == -1) return false;
             if (this.previousSlot == -1) this.previousSlot = mc.player.getInventory().selected;
             mc.player.getInventory().selected = axeSlot;
             this.isBreakingShield = true;
+            this.shieldBreakerSwitchTick = 2;
+            return false;
         }
 
+        // 第 2 步：等待切换包发出
+        if (this.shieldBreakerSwitchTick > 0) return false;
+        if (this.shieldBreakRestoreDelay > 0) return false;
+
+        // 第 3 步：攻击
         cancelAttackCooldownForShieldBreak();
         attackWithKeepSprint(entity);
         mc.player.swing(InteractionHand.MAIN_HAND);
         cancelAttackCooldownForShieldBreak();
 
         this.lastShieldBreakTime = currentTime;
-        if (this.switchBackAfterBreak.getValue()) restoreSlot();
-        else this.isBreakingShield = false;
+
+        // 第 4 步：延迟切回
+        if (this.switchBackAfterBreak.getValue()) {
+            this.shieldBreakRestoreDelay = 2;
+        } else {
+            this.isBreakingShield = false;
+        }
         return true;
     }
 }

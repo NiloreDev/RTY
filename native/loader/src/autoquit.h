@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QObject>
+#include <QMainWindow>
 
 class QTimer;
 
@@ -13,7 +13,7 @@ class QTimer;
 // gives the crash a chance to fire first.
 namespace loader::dbg {
 
-// Install a QTimer::singleShot(parent, 1200, &QCoreApplication::quit).
+// Install a QTimer::singleShot(this, 1200, &QCoreApplication::quit).
 void installAutoQuit(QObject* parent);
 
 } // namespace loader::dbg

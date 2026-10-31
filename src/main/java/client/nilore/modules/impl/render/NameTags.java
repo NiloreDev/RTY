@@ -19,26 +19,25 @@ public class NameTags
     public static NameTags INSTANCE;
 
     // ==================== 基础设置 ====================
-    public final ModeSetting styleSetting = new ModeSetting("Style", "Opal", "Simple", "Naven").withDefault("Opal");
+    public final ModeSetting styleSetting = new ModeSetting("Style", "Opal", "Simple", "Normal", "Naven").withDefault("Opal");
     public final NumberSetting scaleSetting = new NumberSetting("Scale", 0.7, 0.5, 10.0, 0.01);
     public final NumberSetting distanceSetting = new NumberSetting("Max Distance", 128.0, 8.0, 256.0, 1.0);
 
-    // ==================== 透明度 ====================
-    public final NumberSetting opacitySetting = new NumberSetting("Opacity", 1.0, 0.0, 10.0, 0.05);
-
-    // ==================== 功能开关 ====================
-    // 这三个 Simple 也用，所以 Opal / Simple 都显示
+    // ==================== Opal / Simple / Normal 通用开关 ====================
+    // Normal 也会读取这两个开关，因此 Normal 也显示
     public final BooleanSetting showHealthSetting = new BooleanSetting(
             "Invisibles", true,
-            () -> isStyle("Opal", "Simple"));
+            () -> isStyle("Opal", "Simple", "Normal"));
+    public final BooleanSetting showPingSetting = new BooleanSetting(
+            "Hide Teammates", false,
+            () -> isStyle("Opal", "Simple", "Normal"));
+
+    // 仅 Opal / Simple
     public final BooleanSetting showArmorSetting = new BooleanSetting(
             "Show Artifacts", true,
             () -> isStyle("Opal", "Simple"));
-    public final BooleanSetting showPingSetting = new BooleanSetting(
-            "Hide Teammates", false,
-            () -> isStyle("Opal", "Simple"));
 
-    // 以下都仅 Opal
+    // ==================== Opal 专属设置 ====================
     public final BooleanSetting showDistanceSetting = new BooleanSetting(
             "Show Distance", false,
             () -> isStyle("Opal"));
@@ -61,7 +60,7 @@ public class NameTags
             "Show Gear", true,
             () -> isStyle("Opal"));
 
-    // ==================== 掉落物设置 ====================
+    // 掉落物设置
     public final BooleanSetting showItemCountSetting = new BooleanSetting(
             "Show Item Count", true,
             () -> isStyle("Opal"));
@@ -69,12 +68,12 @@ public class NameTags
             "Item Background", true,
             () -> isStyle("Opal"));
 
-    // ==================== Killer 开关 ====================
+    // Killer 开关
     public final BooleanSetting killerSetting = new BooleanSetting(
             "Killer", false,
             () -> isStyle("Opal"));
 
-    // ==================== 显示目标开关 ====================
+    // 显示目标开关
     public final BooleanSetting showPlayersSetting = new BooleanSetting(
             "Show Players", true,
             () -> isStyle("Opal"));
@@ -94,14 +93,28 @@ public class NameTags
             "Show Invisible", false,
             () -> isStyle("Opal"));
 
-    // ==================== Opal 专属设置 ====================
+    // Opal 背景设置
     public final BooleanSetting opalBackgroundSetting = new BooleanSetting(
             "Opal Background", true,
             () -> isStyle("Opal"));
-
     public final NumberSetting opalBackgroundAlphaSetting = new NumberSetting(
             "Opal Background Alpha", 0.47, 0.0, 1.0, 0.01,
             () -> isStyle("Opal"));
+
+    // ==================== Normal 专属设置 ====================
+    // 以下开关仅 Normal 样式可见，其它样式完全隐藏
+    public final NumberSetting opacitySetting = new NumberSetting(
+            "Opacity", 1.0, 0.0, 10.0, 0.05,
+            () -> isStyle("Normal"));
+    public final BooleanSetting showHealthBarSetting = new BooleanSetting(
+            "Show Health Bar", true,
+            () -> isStyle("Normal"));
+    public final BooleanSetting showBackgroundSetting = new BooleanSetting(
+            "Show Background", true,
+            () -> isStyle("Normal"));
+    public final BooleanSetting showDistanceNormalSetting = new BooleanSetting(
+            "Show Distance", false,
+            () -> isStyle("Normal"));
 
     /**
      * 判断当前 Style 是否在给定的候选名单里。

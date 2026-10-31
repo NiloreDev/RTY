@@ -40,7 +40,18 @@ struct Config {
     std::wstring product_id;     // optional, if a fingerprint includes it
 };
 
+// Save config. Also drops any auto-generated cache values so that toggling a
+// custom value off ("empty = auto-generate") actually picks up a fresh value on
+// the next intercept() call.
 bool init(const Config& cfg);
+
+// The registry-hook entry point. Called by the DLL-side hwid_hook (see
+// native/dll/src/hwid_hook.cpp) for every RegQueryValueExW the target performs.
+//
+// Returns true and fills `out_spoof` when (key, value) matches a fingerprint
+// surface the spoof is configured to hide. Returns false otherwise, in which
+// case the caller must fall through to the real API.
+bool intercept(const wchar_t* key, const wchar_t* value, std::wstring& out_spoof);
 
 // ---- classic HWID surfaces -----------------------------------------------
 // crypto RNG to avoid a bad-but-repeated value being the fingerprint keyword
@@ -56,8 +67,9 @@ std::wstring random_hex(size_t bytes);
 std::vector<uint8_t> random_bytes(size_t n);
 
 // ---- hook plumbing --------------------------------------------------------
-// Called from the injected DLL bootstrap: wrap the given read callback and
-// replace the value it would return with the spoofed one.
+// Optional callback a caller can install to observe / override the values
+// intercept() returns. Not required by the current DLL bootstrap; kept for
+// callers that want to react to intercepted reads.
 void set_spoof_hook(hwid_spoof_hook_fn fn, void* user);
 
 // IAT-level registry spoof lives in the injected DLL (native/dll/src/hwid_hook).
@@ -69,28 +81,5 @@ void set_spoof_hook(hwid_spoof_hook_fn fn, void* user);
 // via the loader. Written but not wired yet; see NOTES in .cpp.
 bool patch_remote_computer_name(DWORD pid, const std::wstring& name);
 bool patch_remote_machine_guid(DWORD pid, const std::wstring& guid);
-
-// ---- resolved values (populated by init) ----------------------------------
-// enabled(): whether init() was called with enabled=true.
-// The rest: the effective spoof values (custom if provided, else generated).
-// Empty until init() runs. Read-only.
-bool enabled();
-const std::wstring& machine_guid();
-const std::wstring& volume_serial();
-const std::wstring& mac();
-const std::wstring& computer_name();
-
-// ---- interception entry point ---------------------------------------------
-// Given a registry read request, decide whether it targets one of the known
-// HWID fingerprint keys and if so report the spoofed value.
-//
-// Returns true  -> `out_spoof` holds the value to return to the caller.
-// Returns false -> the request is not a fingerprint key; let the original
-//                  registry path proceed.
-//
-// This is the loader-visible entry point the injected DLL bootstrap (or the
-// loader itself, when compiled into the same process) uses to answer spoofed
-// registry reads without touching the real hive.
-bool intercept(const wchar_t* key, const wchar_t* value, std::wstring& out_spoof);
 
 } // namespace hwidspoof

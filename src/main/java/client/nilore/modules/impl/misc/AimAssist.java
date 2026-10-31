@@ -19,8 +19,7 @@ import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.event.EventTarget;
 
-public class AimAssist
-        extends Module {
+public class AimAssist extends Module {
     private final NumberSetting randomYawOffset = new NumberSetting("Random Yaw Offset", 1.6, 0, 10, 0.01);
     private final NumberSetting randomPitchOffset = new NumberSetting("Random Pitch Offset", 0, 0, 1, 0.01);
     private final NumberSetting range = new NumberSetting("Range", 4, 3, 30, 0.1);
@@ -164,13 +163,21 @@ public class AimAssist
     }
 
     @Override
-    public String getDisplayName() {
-        return "";
+    public String getModuleName() {
+        return "AimAssist";
     }
 
     @Override
-    public String getModuleName() {
-        return "";
+    public String getDisplayName() {
+        return "§fAimAssist";
+    }
+
+    @Override
+    public String getSuffix() {
+        // 显示随机偏移量，保留一位小数
+        float y = randomYawOffset.getValue().floatValue();
+        float p = randomPitchOffset.getValue().floatValue();
+        return String.format("§7[Y:%.1f P:%.1f]", y, p);
     }
 
     @Override

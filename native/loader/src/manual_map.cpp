@@ -1,7 +1,6 @@
 #include "manual_map.h"
 
 #include "loader_settings.h"
-#include "syscalls.h"
 
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -30,6 +29,8 @@ const IMAGE_NT_HEADERS* nt_of(const void* base) {
             static_cast<const BYTE*>(base) + dos->e_lfanew);
 }
 
+// Run LoadLibraryW(name) inside the target process and return the resulting
+// HMODULE seen by that process, or nullptr on failure.
 HMODULE remote_load_library(HANDLE process, const wchar_t* dll_name) {
     SIZE_T sz = (std::wcslen(dll_name) + 1) * sizeof(wchar_t);
     LPVOID arg = VirtualAllocEx(process, nullptr, sz,
@@ -42,26 +43,6 @@ HMODULE remote_load_library(HANDLE process, const wchar_t* dll_name) {
     }
     auto load_lib = reinterpret_cast<LPTHREAD_START_ROUTINE>(GetProcAddress(
             GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
-    if (loader_settings::is_syscall_thread_enabled()) {
-        sys::NtFuncs nt;
-        if (sys::init(nt)) {
-            HANDLE t = nullptr;
-            NTSTATUS st = nt.NtCreateThreadEx(
-                    &t, THREAD_ALL_ACCESS, nullptr, process, load_lib, arg,
-                    0, 0, 0, 0, nullptr);
-            // cleanup once, unconditionally, before deciding fall-through.
-            sys::cleanup(nt);
-            if (NT_SUCCESS(st) && t) {
-                WaitForSingleObject(t, 10000);
-                DWORD ret = 0;
-                GetExitCodeThread(t, &ret);
-                CloseHandle(t);
-                VirtualFreeEx(process, arg, 0, MEM_RELEASE);
-                return reinterpret_cast<HMODULE>(static_cast<ULONG_PTR>(ret));
-            }
-            // fall through to CreateRemoteThread if the syscall thread failed
-        }
-    }
     HANDLE thread = CreateRemoteThread(process, nullptr, 0, load_lib, arg, 0, nullptr);
     if (!thread) {
         VirtualFreeEx(process, arg, 0, MEM_RELEASE);
@@ -72,6 +53,10 @@ HMODULE remote_load_library(HANDLE process, const wchar_t* dll_name) {
     GetExitCodeThread(thread, &ret);
     CloseHandle(thread);
     VirtualFreeEx(process, arg, 0, MEM_RELEASE);
+    // On x64 GetExitCodeThread returns a DWORD which truncates HMODULE, but
+    // ASLR keeps HMODULEs within 32 bits for almost every module on Windows,
+    // so this works in practice. The remote_module enumerator below is the
+    // fallback if the truncation ever bites us.
     return reinterpret_cast<HMODULE>(static_cast<ULONG_PTR>(ret));
 }
 
@@ -111,6 +96,7 @@ void apply_relocations(BYTE* image, const IMAGE_NT_HEADERS* nt, ULONGLONG delta)
             } else if (type == IMAGE_REL_BASED_HIGHLOW) {
                 *reinterpret_cast<DWORD*>(page + off) += static_cast<DWORD>(delta);
             }
+            // IMAGE_REL_BASED_ABSOLUTE (0) is a padding entry; ignore.
         }
         block_ptr += block->SizeOfBlock;
     }
@@ -139,6 +125,10 @@ bool resolve_imports(HANDLE process, BYTE* local_image,
             return false;
         }
 
+        // Use the loader's own copy of the dependency to walk its export table
+        // and compute remote function addresses. This works because Windows
+        // resolves each DLL's exports to a constant RVA, so
+        //   remote_fn = remote_mod_base + (local_fn - local_mod_base)
         HMODULE local_mod = GetModuleHandleA(dll_name_ansi);
         if (!local_mod) local_mod = LoadLibraryA(dll_name_ansi);
         if (!local_mod) {
@@ -217,6 +207,9 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
         return fmt_err(L"VirtualAllocEx (image)", err);
     }
 
+    // Build the in-memory image locally before pushing it across, so we can
+    // apply relocations + import patches in cheap local memory rather than
+    // round-tripping ReadProcessMemory/WriteProcessMemory.
     std::vector<BYTE> local_image(image_size, 0);
     std::memcpy(local_image.data(), dll_bytes, nt->OptionalHeader.SizeOfHeaders);
 
@@ -249,6 +242,7 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
         return fmt_err(L"WriteProcessMemory (image)", err);
     }
 
+    // Tighten section permissions to match the original PE characteristics.
     sect = IMAGE_FIRST_SECTION(nt);
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sect) {
         if (sect->Misc.VirtualSize == 0) continue;
@@ -259,15 +253,21 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
                 sect->Misc.VirtualSize, prot, &old);
     }
 
+    // CreateRemoteThread can only deliver one pointer-sized arg, so we drop a
+    // tiny x64 trampoline that calls
+    //   DllMain(hModule = remote_image,
+    //           fdwReason = DLL_PROCESS_ATTACH,
+    //           lpvReserved = NULL)
+    // through the standard MSVC ABI before returning.
     BYTE shellcode[] = {
-        0x48, 0xB9, 0,0,0,0,0,0,0,0,
-        0xBA, 0x01, 0x00, 0x00, 0x00,
-        0x4D, 0x31, 0xC0,
-        0x48, 0xB8, 0,0,0,0,0,0,0,0,
-        0x48, 0x83, 0xEC, 0x28,
-        0xFF, 0xD0,
-        0x48, 0x83, 0xC4, 0x28,
-        0xC3
+        0x48, 0xB9, 0,0,0,0,0,0,0,0,  // mov rcx, imm64 (hModule)
+        0xBA, 0x01, 0x00, 0x00, 0x00, // mov edx, 1     (DLL_PROCESS_ATTACH)
+        0x4D, 0x31, 0xC0,             // xor r8, r8     (lpvReserved)
+        0x48, 0xB8, 0,0,0,0,0,0,0,0,  // mov rax, imm64 (entry point)
+        0x48, 0x83, 0xEC, 0x28,       // sub rsp, 0x28  (16 + shadow space)
+        0xFF, 0xD0,                   // call rax
+        0x48, 0x83, 0xC4, 0x28,       // add rsp, 0x28
+        0xC3                          // ret
     };
     ULONGLONG hmod = reinterpret_cast<ULONGLONG>(remote_image);
     ULONGLONG entry = hmod + nt->OptionalHeader.AddressOfEntryPoint;
@@ -291,24 +291,8 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
         return fmt_err(L"WriteProcessMemory (shellcode)", err);
     }
 
-    HANDLE thread = nullptr;
-    if (loader_settings::is_syscall_thread_enabled()) {
-        sys::NtFuncs nt;
-        if (sys::init(nt)) {
-            NTSTATUS st = nt.NtCreateThreadEx(
-                    &thread, THREAD_ALL_ACCESS, nullptr, process,
-                    reinterpret_cast<PVOID>(remote_sc), nullptr,
-                    0, 0, 0, 0, nullptr);
-            sys::cleanup(nt);
-            if (!NT_SUCCESS(st) || !thread) {
-                thread = nullptr;
-            }
-        }
-    }
-    if (!thread) {
-        thread = CreateRemoteThread(process, nullptr, 0,
-                reinterpret_cast<LPTHREAD_START_ROUTINE>(remote_sc), nullptr, 0, nullptr);
-    }
+    HANDLE thread = CreateRemoteThread(process, nullptr, 0,
+            reinterpret_cast<LPTHREAD_START_ROUTINE>(remote_sc), nullptr, 0, nullptr);
     if (!thread) {
         DWORD err = GetLastError();
         VirtualFreeEx(process, remote_sc, 0, MEM_RELEASE);
@@ -320,6 +304,8 @@ std::wstring inject_in_memory(DWORD pid, const void* dll_bytes, size_t dll_size)
     CloseHandle(thread);
 
     VirtualFreeEx(process, remote_sc, 0, MEM_RELEASE);
+    // Leave remote_image allocated - the DLL stays mapped in the target's
+    // address space for the lifetime of the process.
     CloseHandle(process);
     return L"";
 }

@@ -26,7 +26,7 @@ import client.nilore.modules.impl.misc.AutoRod;
 import client.nilore.modules.impl.misc.KillSay;
 import client.nilore.modules.impl.misc.MusicPlayer;
 import client.nilore.modules.impl.misc.Eagle;
-import client.nilore.modules.impl.render.*;
+import client.nilore.modules.impl.render.*; // <-- 这里包含了正确的 OpalNameTag
 import client.nilore.event.EventTarget;
 
 public class ModuleManager extends ClientBase {
@@ -120,7 +120,10 @@ public class ModuleManager extends ClientBase {
         this.register(new Drep());
         this.register(new FullBright());
         this.register(new Interface());
-        this.register(new ItemTags());
+
+        // 注册独立出来的 Opal 模块
+        this.register(new OpalNameTag());
+
         this.register(new LyricsModule());
         this.register(new NameProtect());
         this.register(new NameTags());

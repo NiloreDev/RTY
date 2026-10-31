@@ -8,6 +8,7 @@
 
 class QPropertyAnimation;
 class QVariantAnimation;
+class QPainter;          // 新增: drawXxx(QPainter&, ...) 需要前向声明
 
 namespace loader {
 

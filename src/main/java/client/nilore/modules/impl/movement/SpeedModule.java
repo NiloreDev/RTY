@@ -7,6 +7,7 @@ import client.nilore.modules.Category;
 import client.nilore.modules.Module;
 import client.nilore.modules.impl.movement.speed.SpeedMode;
 import client.nilore.modules.impl.movement.speed.impl.SpeedCustom;
+import client.nilore.modules.impl.movement.speed.impl.SpeedGrim;
 import client.nilore.modules.impl.movement.speed.impl.SpeedLegit;
 import client.nilore.modules.impl.movement.speed.impl.SpeedMotion;
 import client.nilore.modules.impl.movement.speed.impl.SpeedOnGround;
@@ -18,12 +19,13 @@ public class SpeedModule extends Module {
     /** 供 SpeedLegit 的可见性判断引用 */
     public static SpeedModule INSTANCE;
 
-    // 把 SpeedCustom 加入列表
+    // 把 Grim 加入列表
     private final List<SpeedMode> modes = List.of(
             new SpeedOnGround(),
             new SpeedMotion(),
             new SpeedLegit(),
-            new SpeedCustom()
+            new SpeedCustom(),
+            new SpeedGrim()
     );
 
     public final ModeSetting mode;
@@ -33,8 +35,9 @@ public class SpeedModule extends Module {
         super("Speed", Category.MOVEMENT);
         INSTANCE = this;
 
-        // 修复了原代码漏写 "OnGround" 选项的问题，并把 "Custom" 加进去
-        mode = new ModeSetting("Mode", "OnGround", "OnGround", "Motion", "Legit", "Custom").withDefault("OnGround");
+        // 模式选项里补上 Grim
+        mode = new ModeSetting("Mode", "OnGround",
+                "OnGround", "Motion", "Legit", "Custom", "Grim").withDefault("OnGround");
 
         activeMode = modes.get(0);
         activeMode.setActive(true);

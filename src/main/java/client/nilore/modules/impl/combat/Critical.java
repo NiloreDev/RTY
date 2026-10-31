@@ -71,7 +71,6 @@ public class Critical extends Module {
             new NumberSetting("SkipTicks Range", 3.0, 1.0, 6.0, 0.1,
                     () -> this.mode.is("SkipTicks"));
 
-    // 【修改】Auto Jump 改为全局可见，所有模式都能开，作用是在打人时保持疾跑
     public final BooleanSetting autoJump =
             new BooleanSetting("Auto Jump", false);
 
@@ -153,12 +152,8 @@ public class Critical extends Module {
         } else if (this.mode.is("Stuck") || this.mode.is("1.9+")) {
             this.tickAdvanced();
         }
-        // GrimAC 和 Optimize 的状态机已被移至 onPostMotion
     }
 
-    /**
-     * 版本 2 的 Grim / Optimize 逻辑：在 Post 阶段释放疾跑。
-     */
     @EventTarget
     public void onPostMotion(MotionEvent event) {
         if (mc.player == null || !event.isPost()) {
@@ -175,7 +170,9 @@ public class Critical extends Module {
                 return;
             }
             if (this.isAttack && !mc.player.onGround() && mc.player.fallDistance > 0.0f) {
-                this.releaseSprint();
+                // === 替换为第2个文件 Grim 模式特有的释放逻辑 (释放 Shift) ===
+                mc.player.setSprinting(false);
+                mc.options.keyShift.setDown(false);
                 this.isSprint = true;
             }
         } else if (this.mode.is("Optimize")) {
@@ -224,7 +221,6 @@ public class Critical extends Module {
             return;
         }
 
-        // 【新增】版本 2 的 Auto Jump 逻辑：只要开了 Auto Jump，且在地面、疾跑、有攻击目标，就保持疾跑
         if (this.autoJump.getValue()) {
             if (mc.player.onGround() && mc.player.isSprinting() && this.isAttack) {
                 event.setSprinting(true);
@@ -232,47 +228,83 @@ public class Critical extends Module {
         }
     }
 
-    @EventTarget
-    public void onAttack(EntityRemoveEvent event) {
-        if (mc.player == null || event.dead()) {
-            return;
-        }
+    // ============================================================
+    // 【核心修复】真实攻击通知
+    // KillAura.attackWithKeepSprint 在攻击后会主动调用这个方法。
+    // 不再依赖 EntityRemoveEvent（它不是攻击事件）。
+    // ============================================================
+    public void notifyAttack(Entity entity) {
+        if (mc.player == null || entity == null) return;
 
         if (this.mode.is("SkipTicks")) {
             if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting()
-                    && event.entity() instanceof LivingEntity living && living.hurtTime < 2) {
+                    && entity instanceof LivingEntity living && living.hurtTime < 2) {
                 this.debugLog("Crit.");
             }
             return;
         }
 
-        // 版本 2 的 Grim 攻击记录逻辑
-        if (!(event.entity() instanceof LivingEntity living)) {
+        if (!(entity instanceof LivingEntity living)) {
             this.enemy = null;
             this.isAttack = false;
             this.isSprint = false;
             return;
         }
 
-        if (mc.player.isSprinting()) {
+        if (this.mode.is("GrimAC")) {
+            // === 替换为第2个文件 Grim 模式的核心逻辑 ===
+            if (mc.player.isSprinting()) {
+                this.enemy = living;
+                this.isAttack = true;
+            }
+            if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting() && this.isAttack && this.isSprint) {
+                this.isAttack = false;
+                this.isSprint = false;
+                // 保留 GrimAC 的 debug 逻辑
+                if (this.debug.getValue()) {
+                    this.grimDebugLog(living);
+                } else {
+                    this.debugLog("Crit.");
+                }
+            }
+        } else {
+            // === 其他模式保留原文件逻辑 ===
+            // 任何攻击都记录 enemy，避免疾跑攻击被 release 后 enemy 不更新导致状态被清空
             this.enemy = living;
-            this.isAttack = true;
-        }
-
-        if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting() && this.isAttack && this.isSprint) {
-            this.isAttack = false;
-            this.isSprint = false;
-            if (this.mode.is("Optimize")) {
-                stopAttack = false;
+            if (mc.player.isSprinting()) {
+                this.isAttack = true;
             }
 
-            // 【保留第1个的Debug输出】
-            if (this.mode.is("GrimAC") && this.debug.getValue()) {
-                this.grimDebugLog(living);
-            } else {
+            if (mc.player.fallDistance > 0.0f && !mc.player.isSprinting() && this.isAttack && this.isSprint) {
+                this.isAttack = false;
+                this.isSprint = false;
+                if (this.mode.is("Optimize")) {
+                    stopAttack = false;
+                }
                 this.debugLog("Crit.");
             }
         }
+    }
+
+    /**
+     * 兼容：EntityRemoveEvent 是实体移除事件，保留作为兼容触发，
+     * 真正的攻击驱动来自 KillAura → notifyAttack。
+     */
+    @EventTarget
+    public void onAttack(EntityRemoveEvent event) {
+        if (mc.player == null || event.dead()) {
+            return;
+        }
+        this.notifyAttack(event.entity());
+    }
+
+    /**
+     * 提供给 KeepSprint 判断：此刻是否要抑制 KeepSprint 恢复疾跑。
+     * GrimAC 模式：isAttack=true 且 isSprint=false 时，说明处于"刚攻击、准备 releaseSprint"窗口，
+     * KeepSprint 不应该重新按疾跑键，否则会覆盖 Critical 的释放。
+     */
+    public boolean shouldSuppressSprint() {
+        return this.isEnabled() && this.mode.is("GrimAC") && this.isAttack && !this.isSprint;
     }
 
     @EventTarget
@@ -395,7 +427,7 @@ public class Critical extends Module {
     private void releaseSprint() {
         if (mc.player == null) return;
         mc.player.setSprinting(false);
-        mc.options.keyShift.setDown(false);
+        mc.options.keySprint.setDown(false);
     }
 
     private boolean canPrepareCritical() {
@@ -450,7 +482,6 @@ public class Critical extends Module {
         }
     }
 
-    // ==================== 【核心】GrimAC 只输出伤害 ====================
     private void grimDebugLog(LivingEntity target) {
         if (mc.player == null || mc.level == null) return;
         if (!this.debug.getValue()) return;

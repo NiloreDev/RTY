@@ -12,6 +12,7 @@
 #include <QRadialGradient>
 #include <QVariantAnimation>
 
+#include <algorithm>
 #include <cmath>
 
 namespace loader {
@@ -248,7 +249,6 @@ void InstanceRow::paintEvent(QPaintEvent*) {
         p.drawRoundedRect(outer, kCornerRadius + 2, kCornerRadius + 2);
 
         // 3) 中心扩散圆环：随 g 从 0 到 1 往外扩散 + 变淡
-        //    用 g 的反向进度（1-g）画一个从小到大的圈
         const qreal expand = 1.0 - g;
         const qreal radius = rect.height() * 0.4 + expand * rect.width() * 0.6;
         const int ringAlpha = int(160 * g);

@@ -3,7 +3,6 @@ package client.nilore.utils.rotation;
 import java.util.Random;
 
 import client.nilore.NiloreClient;
-import client.nilore.modules.impl.combat.*;
 import net.minecraft.network.protocol.game.ServerboundChatPacket;
 import net.minecraft.util.Mth;
 import client.nilore.ClientBase;
@@ -20,14 +19,20 @@ import client.nilore.event.impl.StrafeEvent;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.event.impl.UseItemRayTraceEvent;
 import client.nilore.event.impl.WorldChangeEvent;
+import client.nilore.modules.impl.combat.Velocity;
+import client.nilore.modules.impl.combat.AutoThrow;
+import client.nilore.modules.impl.combat.CrystalAura;
+import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.FireballBlink;
 import client.nilore.modules.impl.movement.Scaffold;
+import client.nilore.modules.impl.movement.TargetStrafe;
 import client.nilore.modules.impl.player.AntiTNT;
 import client.nilore.modules.impl.player.AntiWeb;
 import client.nilore.modules.impl.player.AutoMLG;
 import client.nilore.modules.impl.player.AutoWebPlace;
 import client.nilore.modules.impl.player.Helper;
 import client.nilore.modules.impl.player.MidPearl;
+import client.nilore.modules.impl.world.BlockIn;
 import client.nilore.utils.animation.TickTimer;
 import client.nilore.utils.game.MovementUtil;
 import client.nilore.event.EventTarget;
@@ -42,9 +47,6 @@ public class RotationHandler
 
     public static void setTargetRotation(Rotation rotation) {
         targetRotation = rotation;
-        // Keep the value handed to other patches (attack direction reads this via
-        // PlayerPatch) in the same accumulated frame as the outgoing rotation and apply
-        // the same naturalisation - otherwise the two disagree by a multiple of 360.
         float y = rotation.getYaw();
         if (sentRotation != null) {
             y = sentRotation.getYaw() + Mth.wrapDegrees(y - sentRotation.getYaw());
@@ -94,6 +96,8 @@ public class RotationHandler
             AutoThrow autoThrow = AutoThrow.INSTANCE;
             Velocity antiKB = Velocity.INSTANCE;
             MidPearl midPearl = MidPearl.INSTANCE;
+            BlockIn blockIn = BlockIn.INSTANCE;
+
             isRotating = true;
             if (autoMLG != null && autoMLG.isEnabled() && autoMLG.targetRotation != null) {
                 RotationHandler.setTargetRotation(autoMLG.targetRotation);
@@ -112,18 +116,19 @@ public class RotationHandler
                 RotationHandler.setTargetRotation(AntiWeb.targetRotation);
             } else if (autoWebPlace != null && autoWebPlace.isEnabled() && AutoWebPlace.targetRotation != null) {
                 RotationHandler.setTargetRotation(AutoWebPlace.targetRotation);
+            } else if (blockIn != null && blockIn.isEnabled() && blockIn.targetRotation != null) {
+                RotationHandler.setTargetRotation(blockIn.targetRotation);
             } else if (autoThrow != null && autoThrow.isEnabled() && autoThrow.targetRotation != null) {
                 RotationHandler.setTargetRotation(autoThrow.targetRotation);
             } else if (scaffold != null && scaffold.isEnabled() && scaffold.rots != null) {
                 RotationHandler.setTargetRotation(scaffold.rots);
             } else if (killAura != null && killAura.isEnabled() && KillAura.target != null && killAura.rotation != null) {
                 RotationHandler.setTargetRotation(new Rotation(killAura.rotation.getYaw(), killAura.rotation.getPitch()));
+            } else if (TargetStrafe.INSTANCE != null && TargetStrafe.isOrbiting()) {
+                RotationHandler.setTargetRotation(TargetStrafe.aimRotation());
             } else if (antiKB != null && antiKB.isEnabled() && Velocity.rotation != null) {
                 RotationHandler.setTargetRotation(Velocity.rotation);
             } else {
-                // NO module owns the rotation this tick -> hands off completely. The
-                // outgoing yaw/pitch stay exactly vanilla's; we only keep sentRotation in
-                // sync so the next silent-rotation starts from the right base.
                 isRotating = false;
             }
         }
@@ -156,13 +161,8 @@ public class RotationHandler
             if (mc.player == null) {
                 return;
             }
-            // Nobody owns the rotation: vanilla's own yaw/pitch go out untouched apart from
-            // the naturalisation below.
             if (!isRotating) {
                 prevSentRotation = sentRotation;
-                // Keep sentRotation in the same (accumulated) yaw frame as the silent
-                // rotation used: vanilla's yRot may sit 360 apart from it, and copying the
-                // wrapped value straight in made a -360 delta (Grim AimModulo360).
                 float vanillaYaw = e.getYaw();
                 float vanillaPitch = e.getPitch();
                 if (sentRotation != null) {
@@ -172,12 +172,6 @@ public class RotationHandler
                 float refPitch = sentRotation != null ? sentRotation.getPitch() : vanillaPitch;
                 float naturalYaw = naturalizeYaw(vanillaYaw, refYaw);
                 float naturalPitch = naturalizePitch(vanillaPitch, refPitch);
-                // Write even when the naturalisation was a no-op. sentRotation records this
-                // value, so leaving the packet on vanilla's own frame while sentRotation sat a
-                // multiple of 360 away made the next tick's write jump by that much - Grim
-                // AimModulo360, which fired on every tick spent standing at a yaw near 0. When
-                // nothing is quantised the value written is vanilla's own, so this changes
-                // nothing on the ticks that do not need a nudge.
                 e.setYaw(naturalYaw);
                 e.setPitch(naturalPitch);
                 prevRotation = sentRotation = new Rotation(naturalYaw, Mth.clamp(naturalPitch, -90.0f, 90.0f));
@@ -189,9 +183,6 @@ public class RotationHandler
                 targetRotation = prevRotation = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
             prevSentRotation = sentRotation;
-            // Never wrap the outgoing yaw: the local yRot accumulates past +/-180 when the
-            // player spins the view, and normalising here would turn an identical rotation
-            // into a -360 delta (Grim AimModulo360).
             float baseYaw = sentRotation != null ? sentRotation.getYaw() : mc.player.getYRot();
             float yaw = baseYaw + Mth.wrapDegrees(targetRotation.getYaw() - baseYaw);
             float pitch = Mth.clamp(targetRotation.getPitch(), -90.0f, 90.0f);
@@ -210,7 +201,6 @@ public class RotationHandler
         }
     }
 
-    /** Rotation deltas landing exactly on these steps are a machine fingerprint. */
     private static final double[] ROTATION_STEPS = new double[]{
             0.0, 5.625, 11.25, 16.875, 22.5, 28.125, 33.75, 39.375, 45.0,
             50.625, 56.25, 61.875, 67.5, 73.125, 78.75, 84.375, 90.0};
@@ -243,12 +233,6 @@ public class RotationHandler
         return Math.abs(ratio - (double) Math.round(ratio)) <= 1.0E-10;
     }
 
-    /**
-     * Adds a sub-perceptual nudge whenever the outgoing rotation looks quantised: the
-     * delta hits a known step, the delta is an exact multiple of 360, or the value itself
-     * sits on a 360 boundary. 0.005 deg is far below anything a player or a hitbox check
-     * would notice, but it breaks the exact-match signatures.
-     */
     private static float naturalizeYaw(float yaw, float reference) {
         double delta = Math.abs(Mth.wrapDegrees(yaw - reference));
         double mod = Math.abs(yaw % 360.0f);
@@ -267,18 +251,9 @@ public class RotationHandler
                 : pitch;
     }
 
-    /** Yaw/pitch of the last rotation packet that actually left the client. NaN = none yet. */
     private static float lastWireYaw = Float.NaN;
     private static float lastWirePitch = Float.NaN;
 
-    /**
-     * Hard invariant on top of the naturalisation: two consecutive rotation packets must
-     * never carry the same yaw AND pitch. The naturalisation above only nudges when the
-     * delta looks quantised, so a held aim can still leave the event carrying the previous
-     * packet's value - which is exactly the signature the server's equalrotation part
-     * reports. This runs on the value the packet leaves with, so it holds whichever branch
-     * produced it.
-     */
     private static void guardDuplicateRotation(MotionEvent e) {
         float yaw = e.getYaw();
         float pitch = Mth.clamp(e.getPitch(), -90.0f, 90.0f);
@@ -290,15 +265,13 @@ public class RotationHandler
         lastWirePitch = pitch;
     }
 
-    /** Moves the value by an imperceptible amount that is guaranteed to change the float. */
     private static float nudgeApart(float value) {
-        float delta = 0.0025f + NATURAL_RANDOM.nextFloat() * 0.005f;
+        double step = RotationSmoother.sensitivityStep();
+        float delta = (float) (step > 0.0 ? step : 0.15);
         if (NATURAL_RANDOM.nextBoolean()) {
             delta = -delta;
         }
         float nudged = value + delta;
-        // At a large accumulated yaw the addend can sit below one ULP and vanish; widen it
-        // until the float actually moves.
         for (int i = 0; nudged == value && i < 8; i++) {
             delta *= 2.0f;
             nudged = value + delta;

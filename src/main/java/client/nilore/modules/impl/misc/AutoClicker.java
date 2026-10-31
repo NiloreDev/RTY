@@ -48,13 +48,24 @@ public class AutoClicker extends Module {
     }
 
     @Override
-    public String getDisplayName() {
-        return "";
+    public String getModuleName() {
+        return "AutoClicker";
     }
 
+    // 与 KeepSprint 对齐：displayName 带 §7[mode]，mode 为空时回退到纯名字。
     @Override
-    public String getModuleName() {
-        return "";
+    public String getDisplayName() {
+        String m = this.cpsMode.getValue();
+        if (m == null || m.isEmpty()) {
+            return "§fAutoClicker";
+        }
+        return "§fAutoClicker §7[" + m + "]";
+    }
+
+    // 与 KeepSprint 对齐：suffix 只保留 [mode]，不带 §7 颜色前缀。
+    @Override
+    public String getSuffix() {
+        return "[" + this.cpsMode.getValue() + "]";
     }
 
     @Override

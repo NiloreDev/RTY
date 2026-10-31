@@ -21,29 +21,21 @@ QHash<QString, QVariant> g_cache;
 // Compute %APPDATA%\OpenNilore\settings.json (respects FOLDERID_RoamingAppData
 // via SHGetKnownFolderPath - not the legacy CSIDL fallback so it works in
 // non-roaming scenarios too).
-//
-// NOTE: this used to be a function-local `static const QString` that was
-// initialized exactly once. If the first call happened before COM was ready
-// (or before the AppData folder existed), the empty result was cached for the
-// entire process lifetime — every subsequent read/write silently no-op'd.
-// Now we resolve on each call and only cache on success.
 QString settings_file() {
-    static QString cached;
-    if (!cached.isEmpty()) return cached;
-
-    wchar_t* raw = nullptr;
-    HRESULT hr = SHGetKnownFolderPath(FOLDERID_RoamingAppData,
-                                      KF_FLAG_CREATE, nullptr, &raw);
-    if (FAILED(hr) || !raw) return QString();
-    QString base = QString::fromWCharArray(raw);
-    CoTaskMemFree(raw);
-    if (base.isEmpty()) return QString();
-
-    QDir d(base);
-    if (!d.mkpath(QStringLiteral("OpenNilore"))) return QString();
-    cached = d.filePath(QStringLiteral("OpenNilore")) +
-             QStringLiteral("/settings.json");
-    return cached;
+    static const QString path = [] {
+        wchar_t* raw = nullptr;
+        HRESULT hr = SHGetKnownFolderPath(FOLDERID_RoamingAppData,
+                                          KF_FLAG_CREATE, nullptr, &raw);
+        if (FAILED(hr) || !raw) return QString();
+        QString base = QString::fromWCharArray(raw);
+        CoTaskMemFree(raw);
+        if (base.isEmpty()) return QString();
+        QDir d(base);
+        if (!d.mkpath(QStringLiteral("OpenNilore"))) return QString();
+        return d.filePath(QStringLiteral("OpenNilore")) +
+               QStringLiteral("/settings.json");
+    }();
+    return path;
 }
 
 QJsonObject read_json() {
@@ -88,7 +80,7 @@ void save_value(const QString& key, const QVariant& value) {
     QJsonObject obj = read_json();
     obj.insert(key, QJsonValue::fromVariant(value));
     if (write_json(obj)) {
-        load_all();
+        load_all();              // reload cache
         g_cache.insert(key, value);
     }
 }
@@ -98,16 +90,16 @@ bool is_hwid_spoof_enabled() {
     return v.isValid() && v.toBool();
 }
 
-bool is_syscall_thread_enabled() {
-    QVariant v = load_all().value(kKeySyscallThread());
-    return v.isValid() && v.toBool();
-}
-
-// Early Mode: 检测到 Minecraft java 进程一出现就立即注入(不等游戏窗口)。
-// 默认 OFF。
-bool is_early_mode_enabled() {
-    QVariant v = load_all().value(kKeyEarlyMode());
-    return v.isValid() && v.toBool();
+bool is_native_bypass_enabled() {
+    // 老配置里这个开关叫 earlyMode：先读新键，没写过就沿用旧值，免得升级后
+    // 用户的勾选状态凭空消失（旧键不再写回，下次保存时自然被新键取代）。
+    QHash<QString, QVariant> all = load_all();
+    QVariant v = all.value(kKeyNativeBypass());
+    if (v.isValid()) {
+        return v.toBool();
+    }
+    QVariant legacy = all.value(kKeyLegacyEarlyMode());
+    return legacy.isValid() && legacy.toBool();
 }
 
 QString hwid_custom_value(const QString& key) {

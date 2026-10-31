@@ -19,6 +19,8 @@ add_custom_target(stage_dll_for_loader DEPENDS "${EMBED_DIR}/OpenZen.dll")
 
 qt_add_executable(OpenNiloreLoader WIN32
     src/main.cpp
+    src/autoquit.cpp
+    src/autoquit.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/SplashScreen.cpp
@@ -37,24 +39,35 @@ qt_add_executable(OpenNiloreLoader WIN32
     src/SettingsPage.h
     src/PillSwitch.cpp
     src/PillSwitch.h
-    src/loader_settings.cpp
-    src/loader_settings.h
-    src/syscalls.cpp
-    src/syscalls.h
-    src/autoquit.cpp
-    src/autoquit.h
-    src/hwid_spoof.cpp
-    src/hwid_spoof.h
-    src/hwid_spoof_settings.cpp
-    src/hwid_spoof_settings.h
-    src/process_list.cpp
-    src/injector.cpp
-    src/manual_map.cpp
-    src/embedded_dll.cpp
+
     src/ToastNotification.cpp
     src/ToastNotification.h
+
+    src/loader_settings.cpp
+    src/loader_settings.h
+    src/hwid_spoof.cpp
+    src/hwid_spoof.h
+
+    src/hwid_spoof_settings.cpp
+    src/hwid_spoof_settings.h
+    src/hwid_wmi.cpp
+    src/hwid_wmi.h
+
+    src/spoof_values.cpp
+    src/spoof_values.h
+
+    src/process_list.cpp
+    src/injector.cpp
+    src/early_inject.cpp
+    src/early_inject.h
+    src/manual_map.cpp
+
+    src/syscalls.cpp
+    src/syscalls.h
+
+    src/embedded_dll.cpp
     src/window_title.cpp
-    res/loader.rc                 # ← 显式加入，确保 COMPILE_FLAGS 挂得上
+    res/loader.rc
 )
 
 add_dependencies(OpenNiloreLoader stage_dll_for_loader)
@@ -66,6 +79,9 @@ target_include_directories(OpenNiloreLoader PRIVATE
 
 # Tell rc.exe to look in EMBED_DIR (where OpenZen.dll was staged) when
 # resolving the RCDATA "OpenZen.dll" reference in loader.rc.
+# NOTE: COMPILE_FLAGS 是把字符串原样拼进命令行。如果 EMBED_DIR 含空格，
+# 双引号能挡一次，但 CMake 拼接时仍可能把路径切碎。若你的构建路径有
+# 空格，改成 INCLUDE_DIRECTORIES 属性更稳（CMake 3.6+ 对 .rc 也支持）。
 set_source_files_properties(res/loader.rc PROPERTIES
     COMPILE_FLAGS "/I\"${EMBED_DIR}\""
 )
@@ -76,17 +92,23 @@ target_link_libraries(OpenNiloreLoader PRIVATE
     shlwapi
     user32
     dwmapi
-    shell32     # SHGetKnownFolderPath (loader_settings.cpp)
-    ole32       # CoTaskMemFree / CoInitialize 系
+    ole32
+    oleaut32
+    wbemuuid
+
+    # --- 显式补全（MSVC 默认库已含，但显式声明跨工具链更安全） ---
+    # shell32   : SHGetKnownFolderPath          (loader_settings.cpp)
+    # advapi32  : RegOpenKeyExW / RegQueryValueExW / RegCloseKey (hwid_spoof.cpp)
+    shell32
+    advapi32
 )
 
-# Build-time git revision passed in by Gradle (gradle.properties /
-# CI). Stamped into the window title so a built loader can be
-# traced back to its source commit.
 if(DEFINED OPENZEN_BUILD_REVISION AND NOT OPENZEN_BUILD_REVISION STREQUAL "")
     target_compile_definitions(OpenNiloreLoader PRIVATE
         OPENZEN_BUILD_REVISION="${OPENZEN_BUILD_REVISION}")
 endif()
+
+target_compile_definitions(OpenNiloreLoader PRIVATE NOMINMAX)
 
 set_target_properties(OpenNiloreLoader PROPERTIES
     OUTPUT_NAME "OpenNiloreLoader"
@@ -96,7 +118,11 @@ if(MSVC)
     # requireAdministrator: lets the loader OpenProcess / VirtualAllocEx /
     # CreateRemoteThread against javaw.exe even when the launcher was
     # itself started elevated. UAC consent prompts once on launch.
-    set_target_properties(OpenNiloreLoader PROPERTIES
-        LINK_FLAGS "/SUBSYSTEM:WINDOWS /MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\""
+    #
+    # 用 target_link_options 替代 LINK_FLAGS：LINK_FLAGS 是字符串，里面有
+    # 引号（MANIFESTUAC 值）时容易和 CMake 的命令行拼接规则打架。
+    target_link_options(OpenNiloreLoader PRIVATE
+        "/SUBSYSTEM:WINDOWS"
+        "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
     )
 endif()

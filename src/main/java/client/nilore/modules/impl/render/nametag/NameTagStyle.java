@@ -8,6 +8,7 @@ import client.nilore.event.impl.RenderEvent;
 import client.nilore.modules.impl.render.nametag.OpalNameTag;
 import client.nilore.modules.impl.render.nametag.SimpleNameTag;
 import client.nilore.modules.impl.render.nametag.NavenNameTag;
+import client.nilore.modules.impl.render.nametag.NormalNameTag;
 
 public abstract class NameTagStyle
         extends ClientBase {
@@ -22,6 +23,8 @@ public abstract class NameTagStyle
         styleRegistry.put(OpalNameTag.class, new OpalNameTag());
         styleRegistry.put(SimpleNameTag.class, new SimpleNameTag());
         styleRegistry.put(NavenNameTag.class, new NavenNameTag());
+        // ✅ 补上 Normal 样式的注册，否则 getByName("Normal") 永远返回 null
+        styleRegistry.put(NormalNameTag.class, new NormalNameTag());
     }
 
     public static NameTagStyle getByName(String string) {

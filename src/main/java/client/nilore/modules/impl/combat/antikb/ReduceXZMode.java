@@ -1,10 +1,17 @@
 package client.nilore.modules.impl.combat.antikb;
 
-import java.util.concurrent.LinkedBlockingDeque;
+import java.awt.Color;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.PoseStack;
 
+import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
 import net.minecraft.network.protocol.game.ClientboundAnimatePacket;
@@ -22,11 +29,17 @@ import net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket;
 import net.minecraft.network.protocol.game.ClientboundSoundPacket;
 import net.minecraft.network.protocol.game.ClientboundSystemChatPacket;
 import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
-import net.minecraft.util.Mth;
+import net.minecraft.network.protocol.game.ServerboundInteractPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
+
+import org.lwjgl.glfw.GLFW;
+
+import client.nilore.NiloreClient;
 import client.nilore.event.impl.DisconnectEvent;
 import client.nilore.event.impl.EntityHurtEvent;
 import client.nilore.event.impl.EntityRemoveEvent;
@@ -35,6 +48,7 @@ import client.nilore.event.impl.MotionEvent;
 import client.nilore.event.impl.PreMotionEvent;
 import client.nilore.event.impl.ReceivePacketEvent;
 import client.nilore.event.impl.Render2DEvent;
+import client.nilore.event.impl.RenderEvent;
 import client.nilore.event.impl.RotationEvent;
 import client.nilore.event.impl.SprintEvent;
 import client.nilore.event.impl.StrafeEvent;
@@ -44,68 +58,52 @@ import client.nilore.modules.impl.combat.KillAura;
 import client.nilore.modules.impl.movement.NoSlow;
 import client.nilore.modules.impl.movement.Scaffold;
 import client.nilore.modules.impl.movement.Stuck;
-import client.nilore.utils.game.FightManager;
+import client.nilore.render.FontPresets;
+import client.nilore.render.FontRenderer;
+import client.nilore.render.Paint;
+import client.nilore.render.Renderer;
+import client.nilore.render.RoundedRectangle;
 import client.nilore.utils.game.RotationUtil;
+import client.nilore.utils.render.RenderUtil;
 
-/**
- * ReduceXZ
- *
- * 两套效果，由 Velocity 面板的 Delay 开关切换：
- *
- *   Delay 开启（延迟生效）：
- *     拦截自身击退包 → 进入延迟窗口，满足 看向目标 + 疾跑 + 在 Buffer Range 内
- *     （Release Mode = Sprint 时不要求落地）→ 释放最后一条击退包并开始计数；
- *     计数阶段对着目标连打 Attack Counter 下（x0.6 自减速）。
- *
- *   Delay 关闭（纯计数）：
- *     收到自身击退包 → 直接开始计数，不收包、不取消、不延迟，地面/空中都生效。
- *
- * 两种模式都有一道 Reach(1~3) 距离上限，超出绝不发包，避免 Grim Reach flag。
- *
- * Jump Reset：
- *     计数开始时强制按一次跳跃键，用于重置击退方向 / 减少被推距离。
- *     Delay ON 与 Delay OFF 两条路径都会触发。
- *     由 Velocity 面板的 "Jump Reset" 开关控制。
- *
- * Debug 消息：
- *     只有 Jump Reset 开启（生效）时才输出计数消息；
- *     关闭（未生效）时完全不输出。
- *     开启时显示当前是 [地面]（绿色）还是 [空中]（红色），并附带 Count 计数。
- *
- * Need KillAura：
- *     开启时，只有 KillAura 处于启用状态才生效；
- *     关闭时，任何时候都生效，不受 KillAura 开关影响。
- *
- * 读取的开关：Delay / Max Delay Ticks / Buffer Range / Release Mode / SideStrafe /
- *            Attack Counter / Attack Range / Reach / Jump Reset / Need KillAura。
- */
-public class ReduceXZMode
-        extends AntiKBMode {
+public class ReduceXZMode extends AntiKBMode {
     public static ReduceXZMode INSTANCE;
     public static boolean handlingVelocity;
-    public static boolean velocityHandled;
 
-    private final LinkedBlockingDeque<Packet<ClientGamePacketListener>> packetQueue = new LinkedBlockingDeque<>();
+    private final ConcurrentLinkedQueue<Packet<ClientGamePacketListener>> packetQueue = new ConcurrentLinkedQueue<>();
+    private final Map<Entity, Vec3> entityPositions = new HashMap<>();
 
-    public boolean delaying;
-    private boolean velocityPending;
+    public static boolean compensating;
+    public static boolean inDelayWindow;
+    public static int counterRemaining;
+
     private boolean positionCorrection;
     private int delayTicks;
-    private int velocityPendingTicks;
-    private int attacksRemaining;
-    private Entity target;
-    private float jumpResetYaw;
-    private float jumpResetDifference;
-    private boolean forceForward;
-
-    /** Jump Reset：剩余需要强制按跳跃键的 tick 数 */
+    private int noAimTicks;
+    private int noSprintTicks;
     private int jumpTicks;
-    /** Jump Reset：标记当前是否由我们强制按下了跳跃键 */
     private boolean jumpKeyForced;
+    private long compensateUntilMs = -1L;
+    private Entity target;
+
+    // =================================================================
+    // === HUD 渲染相关变量 ============================================
+    // =================================================================
+    private float hudX = 100.0f;
+    private float hudY = 100.0f;
+    private boolean dragging = false;
+    private double dragStartX = 0;
+    private double dragStartY = 0;
+    private float startHudX = 0;
+    private float startHudY = 0;
+
+    // 字号加大到 18
+    private final FontRenderer hudFont = FontPresets.axiformaBold(18);
+    private static final int HUD_TEXT_COLOR = 0xFFFFFFFF; // 统一纯白
 
     @Override
     public boolean isActive() {
-        return this.delaying || this.attacksRemaining > 0;
+        return inDelayWindow || counterRemaining > 0;
     }
 
     @Override
@@ -113,7 +111,7 @@ public class ReduceXZMode
     }
 
     public static boolean isCountering() {
-        return INSTANCE != null && INSTANCE.attacksRemaining > 0;
+        return counterRemaining > 0;
     }
 
     public static boolean isInAttackWindow() {
@@ -121,7 +119,18 @@ public class ReduceXZMode
     }
 
     public static boolean isInDelayWindow() {
-        return INSTANCE != null && INSTANCE.delaying;
+        return inDelayWindow;
+    }
+
+    public static Entity getLockedTarget() {
+        ReduceXZMode mode = INSTANCE;
+        if (mode == null || Velocity.INSTANCE == null || !Velocity.INSTANCE.isEnabled()) {
+            return null;
+        }
+        if (!inDelayWindow && counterRemaining <= 0) {
+            return null;
+        }
+        return mode.target != null && mode.target.isAlive() ? mode.target : null;
     }
 
     public ReduceXZMode() {
@@ -131,13 +140,12 @@ public class ReduceXZMode
 
     @Override
     public void onEnable() {
-        this.resetGrimState();
+        this.resetAll();
     }
 
     @Override
     public void onDisable() {
-        this.releaseQueue();
-        this.clearGrimState();
+        this.resetAll();
     }
 
     @Override
@@ -153,9 +161,40 @@ public class ReduceXZMode
     public void onMotion(MotionEvent motionEvent) {
     }
 
-    // =================================================================
-    // === Jump Reset ==================================================
-    // =================================================================
+    @Override
+    public void onPreMotion(PreMotionEvent preMotionEvent) {
+    }
+
+    @Override
+    public void onSprint(SprintEvent sprintEvent) {
+    }
+
+    @Override
+    public void onAttack(EntityRemoveEvent entityRemoveEvent) {
+    }
+
+    @Override
+    public void onEntityHurt(EntityHurtEvent event) {
+        if (mc.player == null || event.entity() != mc.player) {
+            return;
+        }
+        Entity attacker = event.damageSource().getDirectEntity();
+        if (attacker == null) {
+            attacker = event.damageSource().getEntity();
+        }
+        if (attacker != null && attacker != mc.player && attacker.isAlive() && this.target == null) {
+            this.target = attacker;
+        }
+    }
+
+    private boolean canJumpNow(LocalPlayer player) {
+        return player.onGround()
+                && !player.isInWater()
+                && !player.isInLava()
+                && !player.onClimbable()
+                && !player.isPassenger();
+    }
+
     @Override
     public void onGameTick(GameTickEvent gameTickEvent) {
         if (mc.player == null) {
@@ -173,29 +212,14 @@ public class ReduceXZMode
             this.restoreJumpKey();
             return;
         }
+        if (!canJumpNow(mc.player)) {
+            this.jumpTicks = 0;
+            this.restoreJumpKey();
+            return;
+        }
         this.jumpKeyForced = true;
         mc.options.keyJump.setDown(true);
         --this.jumpTicks;
-    }
-
-    @Override
-    public void onPreMotion(PreMotionEvent preMotionEvent) {
-    }
-
-    @Override
-    public void onSprint(SprintEvent sprintEvent) {
-    }
-
-    @Override
-    public void onAttack(EntityRemoveEvent entityRemoveEvent) {
-    }
-
-    @Override
-    public void onEntityHurt(EntityHurtEvent event) {
-    }
-
-    @Override
-    public void onRender2D(Render2DEvent render2DEvent) {
     }
 
     @Override
@@ -210,95 +234,68 @@ public class ReduceXZMode
             return;
         }
 
-        if (this.shouldAbort()) {
+        if (this.shouldNotEngage()) {
             return;
         }
 
-        boolean delayEnabled = Velocity.INSTANCE.isNoXZAltDelayEnable.getValue();
+        boolean delayEnabled = Velocity.INSTANCE.delayEnable.getValue();
 
         if (packet instanceof ClientboundSetEntityMotionPacket motion
                 && motion.getId() == mc.player.getId()) {
             if (!delayEnabled) {
-                // 延迟关闭：纯计数，不收包/不取消/不延迟
-                if (this.attacksRemaining <= 0) {
-                    this.attacksRemaining = Velocity.INSTANCE.isNoXZAltAttackAmount.getValue().intValue();
-
-                    // Delay OFF 时也触发 Jump Reset
+                // 延迟关闭：纯计数，不拦截、不延迟，空中/地面都生效
+                if (counterRemaining <= 0) {
+                    counterRemaining = Velocity.INSTANCE.attackAmount.getValue().intValue();
                     if (Velocity.INSTANCE.jumpReset.getValue()) {
                         this.jumpTicks = 1;
                     }
-
-                    this.debugCounter("Attack Count (Delay OFF)");
+                    // 触发纯计数模式的显示
+                    this.debugCounter();
                 }
                 return;
             }
-            // 延迟开启：更新 jump reset 数据并打开延迟窗口，拦截该包
-            this.updateJumpReset(motion);
-            if (!this.delaying) {
-                this.delaying = true;
+            // 延迟开启：进入延迟窗口
+            if (!inDelayWindow) {
+                inDelayWindow = true;
                 this.delayTicks = 0;
                 handlingVelocity = true;
             }
             receivePacketEvent.setCancelled(true);
             this.packetQueue.add(packet);
+        }
+
+        if (!delayEnabled || !inDelayWindow) {
             return;
         }
 
-        if (!delayEnabled || !this.delaying) {
+        if (this.isAllowedPacket(packet)) {
             return;
         }
-        if (this.isImmediatePacket(packet)) {
-            return;
+
+        if (packet instanceof ClientboundMoveEntityPacket move) {
+            Entity entity = move.getEntity(mc.level);
+            if (entity != null) {
+                Vec3 base = this.entityPositions.getOrDefault(entity,
+                        new Vec3(entity.getX(), entity.getY(), entity.getZ()));
+                if (move.hasPosition()) {
+                    this.entityPositions.put(entity, base.add(
+                            move.getXa() / 4096.0,
+                            move.getYa() / 4096.0,
+                            move.getZa() / 4096.0
+                    ));
+                }
+            }
         }
-        // 实体位置同步永不拦截，否则本地命中箱过期会引发 Grim Hitboxes / Reach
-        if (packet instanceof ClientboundMoveEntityPacket
-                || packet instanceof ClientboundTeleportEntityPacket) {
-            return;
+        if (packet instanceof ClientboundTeleportEntityPacket teleport) {
+            Entity entity = mc.level.getEntity(teleport.getId());
+            if (entity != null) {
+                this.entityPositions.put(entity,
+                        new Vec3(teleport.getX(), teleport.getY(), teleport.getZ()));
+            }
         }
+
         receivePacketEvent.setCancelled(true);
         this.packetQueue.add(packet);
-    }
-
-    @Override
-    public void onDisconnect(DisconnectEvent disconnectEvent) {
-        this.releaseQueue();
-        this.clearGrimState();
-    }
-
-    @Override
-    public void reset() {
-    }
-
-    @Override
-    public void onStrafe(StrafeEvent strafeEvent) {
-        if (mc.player == null) {
-            return;
-        }
-
-        if (this.forceForward) {
-            strafeEvent.setForward(1.0f);
-            strafeEvent.setStrafe(0.0f);
-            if (!mc.player.isSprinting()) {
-                mc.player.setSprinting(true);
-            }
-        }
-
-        if (this.velocityPending && mc.player.isSprinting()) {
-            strafeEvent.setSprinting(true);
-
-            if (Math.abs(this.jumpResetDifference) <= 45.0f
-                    && Velocity.INSTANCE.isNoXZAltSideStrafe.getValue() && this.velocityPendingTicks < 4) {
-                float[] movement = this.jumpResetMovement();
-                if (movement[0] != 0.0f) {
-                    strafeEvent.setForward(movement[0]);
-                }
-                if (movement[1] != 0.0f) {
-                    strafeEvent.setStrafe(movement[1]);
-                }
-            } else {
-                this.velocityPending = false;
-            }
-        }
     }
 
     @Override
@@ -307,120 +304,262 @@ public class ReduceXZMode
             return;
         }
 
-        this.target = KillAura.target;
+        this.target = Velocity.INSTANCE.requireKillAura.getValue()
+                ? KillAura.target
+                : this.crosshairTarget();
 
-        if (this.velocityPending) {
-            ++this.velocityPendingTicks;
-            if (this.velocityPendingTicks >= 4) {
-                this.velocityPending = false;
-                this.velocityPendingTicks = 0;
-            }
+        if (this.compensateUntilMs != -1L
+                && (System.currentTimeMillis() >= this.compensateUntilMs || mc.options.keyUp.isDown())) {
+            compensating = false;
+            this.compensateUntilMs = -1L;
         }
 
-        if (mc.player.isDeadOrDying() || this.shouldAbort()) {
-            this.resetGrimState();
+        if (this.shouldNotEngage() || this.noAimTicks >= 3) {
+            this.resetAll();
             return;
         }
 
-        boolean delayEnabled = Velocity.INSTANCE.isNoXZAltDelayEnable.getValue();
+        boolean delayEnabled = Velocity.INSTANCE.delayEnable.getValue();
 
-        // Delay 被关闭时，立即释放被拦截的包并取消延迟状态
-        if (this.delaying && !delayEnabled) {
-            this.delaying = false;
-            this.forceForward = false;
-            handlingVelocity = false;
-            this.releaseQueue();
-        }
-
-        if (delayEnabled && this.delaying) {
-            this.forceForward = true;
-            this.attacksRemaining = 0;
-            ++this.delayTicks;
-            // 超过 Max Delay Ticks 强制释放所有排队包并清空状态
-            if (this.delayTicks >= Velocity.INSTANCE.isNoXZAltMaxDelayTicks.getValue().intValue()) {
-                this.resetGrimState();
+        if (inDelayWindow) {
+            compensating = true;
+            counterRemaining = 0;
+            if (this.delayTicks >= Velocity.INSTANCE.maxDelayTicks.getValue().intValue()) {
+                this.resetAll();
                 return;
             }
-            boolean insideBufferRange = this.target != null
-                    && this.target.distanceTo(mc.player) <= Velocity.INSTANCE.isNoXZAltBufferRange.getValue().doubleValue();
-            if (this.isLookingAtTarget() && insideBufferRange && mc.player.isSprinting()
-                    && (mc.player.onGround() || Velocity.INSTANCE.isNoXZAltReduceMode.is("Sprint"))) {
-                this.attacksRemaining = Velocity.INSTANCE.isNoXZAltAttackAmount.getValue().intValue();
-                this.delaying = false;
+            ++this.delayTicks;
+            // 延迟释放条件：必须看目标 + 疾跑 + 落地
+            if (this.isAimingAtTarget() && mc.player.isSprinting() && mc.player.onGround()) {
+                counterRemaining = Velocity.INSTANCE.attackAmount.getValue().intValue();
+                this.noAimTicks = 0;
+                inDelayWindow = false;
                 handlingVelocity = false;
-                this.releaseLastMotionOnly();
-                this.velocityPending = true;
-                this.velocityPendingTicks = 0;
-
-                // Jump Reset：计数开始时强制按一次跳跃键
+                this.flushQueue();
                 if (Velocity.INSTANCE.jumpReset.getValue()) {
                     this.jumpTicks = 1;
                 }
-
-                this.debugCounter("Attack Count (Delay ON)");
+                // 触发延迟释放后的计数显示
+                this.debugCounter();
             }
         }
 
-        if (this.attacksRemaining > 0) {
-            // Need KillAura 关闭时若没有 KillAura 目标，也允许计数走完，避免状态卡死
-            if (this.target == null || !this.target.isAlive()) {
-                --this.attacksRemaining;
-                if (this.attacksRemaining == 0) {
-                    this.forceForward = false;
+        if (counterRemaining > 0) {
+            if (delayEnabled) {
+                // Delay 开启时：计数阶段要求严格的 视线 和 疾跑 条件
+                if (!this.isAimingAtTarget()) {
+                    ++this.noAimTicks;
+                    return;
                 }
-                return;
+                if (!mc.player.isSprinting()) {
+                    ++this.noSprintTicks;
+                    if (this.noSprintTicks >= 3) {
+                        this.resetAll();
+                    }
+                    return;
+                }
+            } else {
+                // Delay 关闭时（纯计数）：空中被击退无法保持疾跑和视线，直接发起攻击
+                if (this.target == null || !this.target.isAlive()) {
+                    --counterRemaining;
+                    if (counterRemaining <= 0) {
+                        this.resetAll();
+                    }
+                    return;
+                }
             }
-            if (!this.isLookingAtTarget() || !mc.player.isSprinting() || !this.isTargetInReach()) {
-                return;
+
+            this.noAimTicks = 0;
+            this.noSprintTicks = 0;
+            this.attackReduce(this.target);
+            --counterRemaining;
+
+            if (counterRemaining <= 0) {
+                this.resetAll();
             }
-            this.performReduceAttack(this.target);
-            --this.attacksRemaining;
-            if (this.attacksRemaining == 0) {
-                this.forceForward = false;
-            }
+        } else if (compensating) {
+            this.compensateUntilMs = System.currentTimeMillis() + 10L;
         }
     }
 
-    private void performReduceAttack(Entity entity) {
+    @Override
+    public void onStrafe(StrafeEvent strafeEvent) {
+        if (mc.player == null) {
+            return;
+        }
+        if (compensating
+                && (!inDelayWindow || KillAura.shouldKeepSprintInDelayWindow())
+                && Velocity.INSTANCE.autoForwards.getValue()) {
+            strafeEvent.setForward(1.0f);
+        }
+    }
+
+    @Override
+    public void onDisconnect(DisconnectEvent disconnectEvent) {
+        this.resetAll();
+    }
+
+    @Override
+    public void reset() {
+    }
+
+    // =================================================================
+    // === HUD 文字渲染 & 拖动逻辑 =====================================
+    // =================================================================
+    @Override
+    public void onRender2D(Render2DEvent event) {
+        if (!Velocity.INSTANCE.alinkReader.getValue() || !Velocity.INSTANCE.isEnabled()) {
+            return;
+        }
+
+        // 如果没开启 Keep Showing，且不在延迟窗口内，就不显示
+        if (!Velocity.INSTANCE.keepShowing.getValue() && !inDelayWindow) {
+            return;
+        }
+
+        String text;
+        if (inDelayWindow) {
+            int max = Velocity.INSTANCE.maxDelayTicks.getValue().intValue();
+            text = String.format("ReduceXZ Delay %d/%d", this.delayTicks, max);
+        } else {
+            text = "ReduceXZ Ready";
+        }
+
+        float textWidth = hudFont.getWidth(text);
+        float paddingX = 6.0f;
+        float paddingY = 4.0f;
+        float width = textWidth + paddingX * 2.0f;
+        float height = hudFont.getMetrics().capHeight() + paddingY * 2.0f;
+
+        int screenW = mc.getWindow().getGuiScaledWidth();
+        int screenH = mc.getWindow().getGuiScaledHeight();
+
+        if (Float.isNaN(hudX) || Float.isNaN(hudY) || hudX < 0.0f || hudX > screenW || hudY < 0.0f || hudY > screenH) {
+            hudX = (screenW - width) / 2.0f;
+            hudY = screenH / 2.0f + 50.0f;
+        }
+
+        // --- 拖动逻辑 ---
+        if (mc.screen instanceof ChatScreen) {
+            long window = mc.getWindow().getWindow();
+            double[] rawX = new double[1];
+            double[] rawY = new double[1];
+            GLFW.glfwGetCursorPos(window, rawX, rawY);
+
+            double mouseX = rawX[0] * screenW / Math.max(1.0, mc.getWindow().getScreenWidth());
+            double mouseY = rawY[0] * screenH / Math.max(1.0, mc.getWindow().getScreenHeight());
+            boolean leftDown = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+
+            boolean hovered = mouseX >= hudX && mouseX <= hudX + width && mouseY >= hudY && mouseY <= hudY + height;
+
+            if (leftDown && !this.dragging && hovered) {
+                this.dragging = true;
+                this.dragStartX = mouseX;
+                this.dragStartY = mouseY;
+                this.startHudX = hudX;
+                this.startHudY = hudY;
+            }
+
+            if (this.dragging) {
+                if (!leftDown) {
+                    this.dragging = false;
+                } else {
+                    hudX = this.startHudX + (float) (mouseX - this.dragStartX);
+                    hudY = this.startHudY + (float) (mouseY - this.dragStartY);
+                }
+            }
+        } else {
+            this.dragging = false;
+        }
+
+        final float finalX = hudX;
+        final float finalY = hudY;
+        final String finalText = text;
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableDepthTest();
+        RenderSystem.depthMask(false);
+        RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
+
+        Renderer.render(event.guiGraphics(), drawContext -> {
+            try (Paint paint = new Paint()) {
+                drawContext.save();
+
+                // 纯白文字
+                paint.setColor(HUD_TEXT_COLOR);
+                float textY = finalY + (height - hudFont.getMetrics().capHeight()) / 2.0f + 1.0f;
+                drawContext.drawString(finalText, finalX + paddingX, textY, hudFont, paint);
+
+                drawContext.restore();
+            }
+        });
+
+        RenderSystem.depthMask(true);
+        RenderSystem.enableDepthTest();
+        RenderSystem.disableBlend();
+    }
+
+    @Override
+    public void onRender(RenderEvent renderEvent) {
+        if (!Velocity.INSTANCE.targetEsp.getValue() || this.target == null || !inDelayWindow) {
+            return;
+        }
+        if (mc.gameRenderer == null) {
+            return;
+        }
+        Vec3 position = this.entityPositions.get(this.target);
+        if (position == null) {
+            return;
+        }
+        double halfWidth = this.target.getBbWidth() / 2.0;
+        double height = this.target.getBbHeight();
+        PoseStack poseStack = renderEvent.poseStack();
+        Vec3 camera = mc.gameRenderer.getMainCamera().getPosition();
+        poseStack.pushPose();
+        poseStack.translate(position.x - camera.x, position.y - camera.y, position.z - camera.z);
+        AABB box = new AABB(-halfWidth, 0.0, -halfWidth, halfWidth, height, halfWidth);
+        Color fill = new Color(255, 255, 255, 64);
+        RenderUtil.drawFilledColoredBox(box, poseStack, fill, fill);
+        Color outline = new Color(255, 255, 255, 204);
+        RenderUtil.drawColoredBox(box, poseStack, outline, outline);
+        poseStack.popPose();
+    }
+
+    private void attackReduce(Entity entity) {
         if (entity == null || mc.player == null || mc.getConnection() == null) {
             return;
         }
-        // 兜底：绝不在 Reach 之外发包，避免 Grim Reach flag
-        if (!this.isTargetInReach()) {
+        if (!KillAura.attackAndLock()) {
             return;
         }
-        if (!FightManager.attackAndLock()) {
-            return;
+        if (NiloreClient.isReady()) {
+            NiloreClient.getInstance().getEventBus().call(new EntityRemoveEvent(false, entity));
         }
-        FightManager.attackByPacket(entity, false);
+        mc.getConnection().send(ServerboundInteractPacket.createAttackPacket(entity, mc.player.isShiftKeyDown()));
         mc.player.swing(InteractionHand.MAIN_HAND);
-        mc.player.setDeltaMovement(mc.player.getDeltaMovement().multiply(0.6, 1.0, 0.6));
-        mc.player.setSprinting(false);
+
+        // 恢复为固定的 0.6 减速比例
+        Vec3 movement = mc.player.getDeltaMovement();
+        mc.player.setDeltaMovement(movement.x * 0.6, movement.y, movement.z * 0.6);
     }
 
-    private boolean isLookingAtTarget() {
-        if (this.target == null) {
-            return false;
-        }
-        return RotationUtil.isLookingAt(this.target,
-                Velocity.INSTANCE.isNoXZAltAttackRange.getValue().doubleValue(), 0.1f);
+    private Entity crosshairTarget() {
+        return mc.hitResult instanceof EntityHitResult hit ? hit.getEntity() : null;
     }
 
-    /**
-     * 是否在攻击距离内。
-     * 用与 Grim 相同的口径：眼睛位置 → 目标碰撞箱最近点 的距离 <= Reach(面板可调，1~3)，
-     * 超过就绝不攻击，避免 "failed Reach" flag。
-     */
-    private boolean isTargetInReach() {
+    private boolean isAimingAtTarget() {
         if (this.target == null || mc.player == null) {
             return false;
         }
-        Vec3 eyePos = mc.player.getEyePosition(1.0f);
-        double distance = RotationUtil.closestPoint(eyePos, this.target.getBoundingBox()).distanceTo(eyePos);
-        return distance <= Velocity.INSTANCE.isNoXZAltReach.getValue().doubleValue();
+        if (!Velocity.INSTANCE.requireKillAura.getValue()) {
+            return mc.hitResult instanceof EntityHitResult hit && hit.getEntity() == this.target;
+        }
+        return RotationUtil.isLookingAt(this.target,
+                Math.max(3.0, RotationUtil.getReachLimit()), 0.1f);
     }
 
-    private boolean shouldAbort() {
+    private boolean shouldNotEngage() {
         if (mc.player == null || mc.getConnection() == null) {
             return true;
         }
@@ -436,14 +575,7 @@ public class ReduceXZMode
         if (mc.screen instanceof InventoryScreen) {
             return true;
         }
-        // Need KillAura：开启时，只有 KillAura 启用才允许生效；关闭时不受限制
-        if (Velocity.INSTANCE.isReduceModeNeedKillAura != null
-                && Velocity.INSTANCE.isReduceModeNeedKillAura.getValue()
-                && (KillAura.INSTANCE == null || !KillAura.INSTANCE.isEnabled())) {
-            return true;
-        }
-        // 延迟窗口内必须有有效目标，否则释放队列并取消
-        if (this.delaying && (this.target == null || !this.target.isAlive())) {
+        if (this.target == null || !this.target.isAlive()) {
             return true;
         }
         if (mc.player.isDeadOrDying() || mc.player.isSpectator()) {
@@ -459,7 +591,7 @@ public class ReduceXZMode
         return stuck != null && stuck.isEnabled();
     }
 
-    private boolean isImmediatePacket(Packet<?> packet) {
+    private boolean isAllowedPacket(Packet<?> packet) {
         return packet instanceof ClientboundSetEntityMotionPacket
                 || packet instanceof ClientboundSetHealthPacket
                 || packet instanceof ClientboundPlayerPositionPacket
@@ -476,137 +608,76 @@ public class ReduceXZMode
                 && animation.getId() != mc.player.getId();
     }
 
-    private void releaseQueue() {
-        if (mc.getConnection() == null) {
-            this.packetQueue.clear();
-            return;
-        }
-        Packet<ClientGamePacketListener> packet;
-        while ((packet = this.packetQueue.poll()) != null) {
-            try {
-                packet.handle(mc.getConnection());
-            } catch (Exception exception) {
+    private void flushQueue() {
+        mc.execute(() -> {
+            if (mc.getConnection() == null) {
                 this.packetQueue.clear();
-                break;
+                return;
             }
-        }
-    }
-
-    private void releaseLastMotionOnly() {
-        if (mc.getConnection() == null) {
-            this.packetQueue.clear();
-            return;
-        }
-        ClientboundSetEntityMotionPacket lastMotion = null;
-        for (Packet<ClientGamePacketListener> queued : this.packetQueue) {
-            if (queued instanceof ClientboundSetEntityMotionPacket motion) {
-                lastMotion = motion;
+            Packet<ClientGamePacketListener> packet;
+            while ((packet = this.packetQueue.poll()) != null) {
+                try {
+                    packet.handle(mc.getConnection());
+                } catch (Exception exception) {
+                    this.packetQueue.clear();
+                    break;
+                }
             }
-        }
-        Packet<ClientGamePacketListener> packet;
-        while ((packet = this.packetQueue.poll()) != null) {
-            if (packet instanceof ClientboundSetEntityMotionPacket && packet != lastMotion) {
-                continue;
-            }
-            try {
-                packet.handle(mc.getConnection());
-            } catch (Exception exception) {
-                this.packetQueue.clear();
-                break;
-            }
-        }
+        });
     }
 
-    private void resetGrimState() {
-        this.releaseQueue();
-        this.clearGrimState();
-    }
-
-    private void clearGrimState() {
-        this.delaying = false;
-        this.forceForward = false;
-        this.velocityPending = false;
-        this.positionCorrection = false;
-        this.delayTicks = 0;
-        this.velocityPendingTicks = 0;
-        this.attacksRemaining = 0;
-        this.target = null;
-        handlingVelocity = false;
-        velocityHandled = false;
-
-        // Jump Reset 状态清理
-        this.jumpTicks = 0;
-        this.restoreJumpKey();
-    }
-
-    private void updateJumpReset(ClientboundSetEntityMotionPacket motion) {
-        if (mc.player == null) {
-            return;
-        }
-        double x = -motion.getXa();
-        double z = -motion.getZa();
-        if (Math.abs(x) < 1.0E-6 && Math.abs(z) < 1.0E-6) {
-            this.jumpResetYaw = mc.player.getYRot();
-            this.jumpResetDifference = 0.0f;
-            return;
-        }
-        this.jumpResetYaw = (float) Math.toDegrees(Math.atan2(-x, z));
-        this.jumpResetDifference = Mth.wrapDegrees(this.jumpResetYaw - mc.player.getYRot());
-    }
-
-    private float[] jumpResetMovement() {
-        float deltaYaw = Mth.wrapDegrees(this.jumpResetYaw - mc.player.getYRot());
-        if (this.jumpResetDifference > 22.5f) {
-            deltaYaw -= 45.0f;
-        } else if (this.jumpResetDifference < -22.5f) {
-            deltaYaw += 45.0f;
-        }
-        double radians = Math.toRadians(deltaYaw);
-        double x = Math.sin(radians);
-        double z = Math.cos(radians);
-        float forward = z > 0.707 ? 1.0f : z < -0.707 ? -1.0f : 0.0f;
-        float strafe = x > 0.707 ? -1.0f : x < -0.707 ? 1.0f : 0.0f;
-        return new float[]{forward, strafe};
-    }
-
-    /**
-     * 恢复原跳跃键状态。
-     * 若本地玩家当前没有物理按下跳跃键，就把 keyJump 重置为 false。
-     * 若 Scaffold 开启则不操作（避免与 Scaffold 的跳跃控制冲突）。
-     */
     private void restoreJumpKey() {
         if (!this.jumpKeyForced) {
             return;
         }
         this.jumpKeyForced = false;
-        if (mc.player == null || (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled())) {
+        if (mc.player == null || Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled()) {
             return;
         }
-        boolean down = InputConstants.isKeyDown(
-                mc.getWindow().getWindow(),
-                mc.options.keyJump.getKey().getValue());
+        boolean down = InputConstants.isKeyDown(mc.getWindow().getWindow(), mc.options.keyJump.getKey().getValue());
         mc.options.keyJump.setDown(down);
     }
 
-    // =================================================================
-    // === Debug =======================================================
-    // =================================================================
+    private void resetAll() {
+        this.flushQueue();
+        inDelayWindow = false;
+        compensating = false;
+        this.positionCorrection = false;
+        this.delayTicks = 0;
+        counterRemaining = 0;
+        this.noAimTicks = 0;
+        this.noSprintTicks = 0;
+        this.compensateUntilMs = -1L;
+        this.jumpTicks = 0;
+        this.restoreJumpKey();
+        this.entityPositions.clear();
+        this.target = null;
+        handlingVelocity = false;
+    }
 
     /**
      * 计数激活时的汇总消息。
-     *
      * 仅当 Jump Reset 开启（生效）时才输出；
      * 地面显示 [地面] (绿色)，空中显示 [空中] (红色)，后接 Count。
      */
-    private void debugCounter(String prefix) {
+    private void debugCounter() {
         if (Velocity.INSTANCE == null || mc.player == null) return;
 
         // Jump Reset 未开启时，不输出任何消息
         if (!Velocity.INSTANCE.jumpReset.getValue()) return;
+        // Chat Alert 开启时才输出
+        if (!Velocity.INSTANCE.chatReduceXZ.getValue()) return;
 
         String location = mc.player.onGround() ? "§a[地面] " : "§c[空中] ";
-        String count = "§fCount: " + this.attacksRemaining + "/" + this.attacksRemaining;
+        String count = "§fCount: " + counterRemaining + "/" + counterRemaining;
 
-        Velocity.INSTANCE.debugChat("§c[Velocity] §4[ReduceXZ] " + location + count);
+        mc.player.displayClientMessage(net.minecraft.network.chat.Component.literal("§c[Velocity] §4[ReduceXZ] " + location + count), false);
+    }
+
+    static {
+        handlingVelocity = false;
+        compensating = false;
+        inDelayWindow = false;
+        counterRemaining = 0;
     }
 }

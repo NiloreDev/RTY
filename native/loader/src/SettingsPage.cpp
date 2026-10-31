@@ -1,7 +1,7 @@
 #include "SettingsPage.h"
 
 #include "PillSwitch.h"
-#include "hwid_spoof_settings.h"
+#include "hwid_spoof_settings.h"     // ← 新增
 #include "loader_settings.h"
 
 #include <QFrame>
@@ -34,13 +34,14 @@ SettingsPage::SettingsPage(QWidget* parent)
         : QWidget(parent) {
     setStyleSheet(QString::fromUtf8(kSettingsQss));
     buildUi();
+
+    // 启动时把持久化的设置一次性灌进 hwidspoof::g_config，
+    // 否则拦截路径拿到的永远是最初的默认值。
+    apply_hwid_spoof();
 }
 
 bool SettingsPage::hwidSpoofEnabled() const {
     return hwidSwitch_ && hwidSwitch_->isChecked();
-}
-bool SettingsPage::syscallThreadEnabled() const {
-    return syscallSwitch_ && syscallSwitch_->isChecked();
 }
 
 QWidget* SettingsPage::makeToggleRow(const QString& name, const QString& desc,
@@ -82,8 +83,7 @@ void SettingsPage::buildUi() {
     hwidSwitch_->setChecked(loader_settings::is_hwid_spoof_enabled());
     connect(hwidSwitch_, &PillSwitch::toggled, this, [](bool on) {
         loader_settings::save_value(loader_settings::kKeyHwidSpoof(), on);
-        // Re-resolve the spoof immediately so toggling takes effect without a restart.
-        loader::apply_hwid_spoof();
+        apply_hwid_spoof();      // ← 关键：立刻把开关写进 hwidspoof::g_config
     });
     col->addWidget(makeToggleRow(
         QStringLiteral("HWID Spoof"),
@@ -91,33 +91,20 @@ void SettingsPage::buildUi() {
                        "serial, MAC, computer name). Default OFF."),
         hwidSwitch_, this));
 
-    // ---- Syscall Thread (default OFF) ----
-    syscallSwitch_ = new PillSwitch(this);
-    syscallSwitch_->setChecked(loader_settings::is_syscall_thread_enabled());
-    connect(syscallSwitch_, &PillSwitch::toggled, this, [](bool on) {
-        loader_settings::save_value(loader_settings::kKeySyscallThread(), on);
+    // Native Bypass
+    nativeBypassSwitch_ = new PillSwitch(this);
+    nativeBypassSwitch_->setChecked(loader_settings::is_native_bypass_enabled());
+    connect(nativeBypassSwitch_, &PillSwitch::toggled, this, [](bool on) {
+        loader_settings::save_value(loader_settings::kKeyNativeBypass(), on);
     });
     col->addWidget(makeToggleRow(
-        QStringLiteral("Syscall Thread"),
-        QStringLiteral("Use NtCreateThreadEx instead of CreateRemoteThread for "
-                       "injection. Default OFF."),
-        syscallSwitch_, this));
-
-    // ---- Early Mode (default OFF) ----
-    // 检测到 Minecraft java 进程就立即注入(不等游戏窗口出现), 不需要点 Inject。
-    // 一直后台观察, 后续启动的游戏也会被自动接管。
-    earlySwitch_ = new PillSwitch(this);
-    earlySwitch_->setChecked(loader_settings::is_early_mode_enabled());
-    connect(earlySwitch_, &PillSwitch::toggled, this, [](bool on) {
-        loader_settings::save_value(loader_settings::kKeyEarlyMode(), on);
-    });
-    col->addWidget(makeToggleRow(
-        QStringLiteral("Early Mode"),
-        QStringLiteral("Auto-inject as soon as a Minecraft java process "
-                       "appears (before the game window opens), without "
-                       "clicking Inject. Keeps watching so a later launch "
-                       "is taken over too. Default OFF."),
-        earlySwitch_, this));
+        QStringLiteral("Native Bypass"),
+        QStringLiteral("Auto: as soon as a Minecraft instance shows up, restart "
+                       "it suspended from its own command line, map the DLL in "
+                       "before it resumes, then let it go. The game window reopens "
+                       "and you rejoin the server. Clicking Inject does the same "
+                       "on demand. Default OFF."),
+        nativeBypassSwitch_, this));
 
     col->addStretch(1);
 }

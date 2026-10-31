@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <string>
 #include <vector>
-#include <QString>
 
 namespace loader {
 
@@ -20,16 +19,17 @@ struct WindowInfo {
     std::wstring class_name;
 };
 
-// 【新增】主界面列表用的展示项。InstanceList / MainWindow 使用它来填充
-// 可用实例列表（pid + 标题 + 命令行）。
-struct Instance {
-    unsigned long pid = 0;
-    QString       title;
-    QString       commandLine;
-};
-
 // Enumerate processes whose image is javaw.exe / java.exe.
 std::vector<JavaProcess> list_java_processes();
+
+// Working directory the target process was started with (PEB CurrentDirectory).
+// Empty when it cannot be read.
+std::wstring read_working_directory(HANDLE process);
+
+// Environment block of the target process (PEB ProcessParameters.Environment), in
+// the UTF-16 "KEY=VALUE\0...\0\0" form CreateProcess wants. Empty when it cannot
+// be read or does not validate.
+std::vector<wchar_t> read_environment_block(HANDLE process);
 
 // Map the embedded OpenZen.dll directly into the target process and run its
 // DllMain via shellcode. The DLL bytes never touch disk. Returns an empty

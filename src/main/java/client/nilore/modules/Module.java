@@ -44,6 +44,7 @@ public abstract class Module
         this.settings = new ArrayList<>();
     }
 
+
     public void setKey(int keyCode) {
         this.keyCode = keyCode;
         this.bind.setKey(keyCode);

@@ -11,7 +11,7 @@ import client.nilore.modules.impl.combat.Velocity;
  * AntiKBMode 注册表
  *
  * 统一模式：
- *   JumpReset / Mix / ReduceXZ / Legit / NoXZAlt / Naven / EpsilonCancel / EpsilonReduce / EpsilonDelay /
+ *   JumpReset / Mix / ReduceXZ / Legit / Naven / EpsilonCancel / EpsilonReduce / EpsilonDelay /
  *   OpalGrim / OpalJump / OpalReduce / OpalMix
  */
 public abstract class AntiKBMode extends ClientBase {
@@ -39,8 +39,7 @@ public abstract class AntiKBMode extends ClientBase {
         modes.put(MixMode.class, new MixMode());
         modes.put(ReduceXZMode.class, new ReduceXZMode());
 
-        // Legit（原 NoXZ）
-        modes.put(LegitMode.class, new LegitMode());
+
 
         // Naven
         modes.put(NavenVelocityMode.class, new NavenVelocityMode());

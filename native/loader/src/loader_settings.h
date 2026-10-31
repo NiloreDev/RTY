@@ -14,8 +14,9 @@ namespace loader_settings {
 // Keys (stable across versions). Keep these strings short & clear so the
 // settings JSON stays readable.
 inline QString kKeyHwidSpoof()   { return QStringLiteral("hwidSpoof"); }
-inline QString kKeySyscallThread(){ return QStringLiteral("syscallThread"); }
-inline QString kKeyEarlyMode()   { return QStringLiteral("earlyMode"); }
+inline QString kKeyNativeBypass(){ return QStringLiteral("nativeBypass"); }
+/** 旧键名（原 Early Mode），只用于把已经存下来的开关状态迁到 kKeyNativeBypass。 */
+inline QString kKeyLegacyEarlyMode() { return QStringLiteral("earlyMode"); }
 inline QString kKeyMachineGuid() { return QStringLiteral("hwid.machineGuid"); }
 inline QString kKeyVolumeSerial(){ return QStringLiteral("hwid.volumeSerial"); }
 inline QString kKeyMac()         { return QStringLiteral("hwid.mac"); }
@@ -35,10 +36,10 @@ void save_value(const QString& key, const QVariant& value);
 
 // Convenience typed accessors.
 bool is_hwid_spoof_enabled();
-bool is_syscall_thread_enabled();
-// Early Mode: 检测到 Minecraft java 进程一出现就立即注入(不等游戏窗口)。
-// 默认 OFF。
-bool is_early_mode_enabled();
+// Native Bypass: relaunch the instance suspended and inject before it resumes, so
+// our DLL is already resident before anything the game loads afterwards (the
+// AC's loader included) gets a chance to run. Default OFF.
+bool is_native_bypass_enabled();
 QString hwid_custom_value(const QString& key);
 
 // For settings.json on disk, we store as a simple JSON object. On Windows we

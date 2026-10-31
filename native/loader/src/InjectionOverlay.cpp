@@ -165,13 +165,15 @@ void InjectionOverlay::start() {
     progressAnim_->setEasingCurve(QEasingCurve::OutCubic);
     progressAnim_->start();
 
+    // ★ 修复：QPointer 非线程安全，不在后台线程读。
+    //   判空统一放到 UI 线程的 lambda 里（invokeMethod 的 context 是 self，
+    //   widget 已析构时 Qt 会自动丢弃这次调用，不会 UB）。
     QPointer<InjectionOverlay> self = this;
     const unsigned long pid = pid_;
     std::thread([self, pid]() {
         std::wstring err = inject(pid);
         QString qerr = QString::fromWCharArray(err.c_str(),
                                                static_cast<int>(err.size()));
-        if (!self) return;
         QMetaObject::invokeMethod(self, [self, qerr]() {
             if (self) self->onInjectResult(qerr);
         }, Qt::QueuedConnection);
@@ -280,7 +282,7 @@ void InjectionOverlay::drawStars(QPainter& p, const QRectF& r, qreal t) {
 void InjectionOverlay::drawHelixArms(QPainter& p, const QPointF& c, qreal t) {
     const int arms = 2;
     const int segs = 70;
-    const qreal rot = t * 18.0 * kTau / 360.0;  // 缓慢旋转
+    const qreal rot = t * 18.0 * kTau / 360.0;
 
     p.setBrush(Qt::NoBrush);
 
@@ -290,7 +292,7 @@ void InjectionOverlay::drawHelixArms(QPainter& p, const QPointF& c, qreal t) {
         bool first = true;
 
         for (int s = 0; s < segs; ++s) {
-            const qreal u = s / qreal(segs - 1);   // 0..1
+            const qreal u = s / qreal(segs - 1);
             const qreal ang = baseAng + u * 2.6 * kTau + rot;
             const qreal rad = 15.0 + u * 220.0;
 
@@ -299,7 +301,6 @@ void InjectionOverlay::drawHelixArms(QPainter& p, const QPointF& c, qreal t) {
             else path.lineTo(pt);
         }
 
-        // 沿路径点撒小光点
         for (int s = 0; s < 30; ++s) {
             const qreal u = hash01(s, 100 + a);
             const qreal ang = baseAng + u * 2.6 * kTau + rot;
@@ -360,7 +361,6 @@ void InjectionOverlay::drawHexShield(QPainter& p, const QPointF& c, qreal t) {
         p.setBrush(Qt::NoBrush);
         p.drawPath(hex);
 
-        // 每个顶点一个发光点
         for (int i = 0; i < sides; ++i) {
             const qreal a = i / qreal(sides) * kTau + rot;
             const QPointF pt = c + QPointF(std::cos(a), std::sin(a)) * breathR;
@@ -416,7 +416,6 @@ void InjectionOverlay::drawRingStream(QPainter& p, const QPointF& c, qreal t) {
 
         const QPointF pt = c + QPointF(std::cos(ang), std::sin(ang)) * rr;
 
-        // 亮度随 i 和时间做波动
         const qreal bright = 0.35 + 0.65 * std::abs(std::sin(t * 3.0 + i * 0.5));
         QColor col = hueShift(QColor(140, 220, 255), t * 60.0 + i * 3.0);
         col.setAlphaF(bright * 0.85);
@@ -477,7 +476,6 @@ void InjectionOverlay::drawSpinner(QPainter& p, const QPointF& c, qreal t) {
     const qreal R = 42.0;
 
     if (!injectDone_) {
-        // 外层虚线环
         {
             const qreal r1 = R + 18.0;
             QColor col = hueShift(QColor(120, 190, 255), t * 25.0);
@@ -493,7 +491,6 @@ void InjectionOverlay::drawSpinner(QPainter& p, const QPointF& c, qreal t) {
             p.restore();
         }
 
-        // 主环 (三段弧)
         {
             QColor col = hueShift(QColor(120, 190, 255), t * 30.0);
             col.setAlpha(240);
@@ -507,7 +504,6 @@ void InjectionOverlay::drawSpinner(QPainter& p, const QPointF& c, qreal t) {
             p.drawArc(rect, start + 240 * 16,    50 * 16);
         }
 
-        // 副环 (粉)
         {
             const qreal r2 = R * 0.72;
             QColor col = hueShift(QColor(255, 130, 200), t * -20.0);
@@ -521,7 +517,6 @@ void InjectionOverlay::drawSpinner(QPainter& p, const QPointF& c, qreal t) {
             p.drawArc(rect, start + 180 * 16,  60 * 16);
         }
 
-        // 内虚线环
         {
             const qreal r3 = R * 0.42;
             QColor col = hueShift(QColor(180, 220, 255), t * 45.0);
@@ -537,7 +532,6 @@ void InjectionOverlay::drawSpinner(QPainter& p, const QPointF& c, qreal t) {
             p.restore();
         }
 
-        // 核心脉冲
         {
             const qreal pulse = 0.5 + 0.5 * std::sin(t * kTau * 1.4);
             const qreal coreR = 6.0 + pulse * 4.0;
@@ -554,7 +548,6 @@ void InjectionOverlay::drawSpinner(QPainter& p, const QPointF& c, qreal t) {
             p.drawEllipse(c, 2.4, 2.4);
         }
     } else {
-        // ---- 完成状态 ----
         const QColor accent = injectOk_ ? QColor(62, 220, 120) : QColor(240, 92, 92);
         const qreal tt = std::clamp(checkmarkProgress_, 0.0, 1.0);
 
@@ -657,14 +650,13 @@ void InjectionOverlay::drawParticles(QPainter& p) {
     }
 }
 
-// 13. 爆炸 (含白光爆闪)
+// 13. 爆炸
 void InjectionOverlay::drawImpact(QPainter& p, const QPointF& c) {
     if (impactGlow_ <= 0.001) return;
 
     const QColor accent = injectOk_ ? QColor(62, 220, 120) : QColor(240, 92, 92);
     const qreal g = impactGlow_;
 
-    // 扩散冲击波 3 圈
     for (int i = 0; i < 3; ++i) {
         const qreal off = i * 0.18;
         const qreal s = std::clamp((g - off) / (1.0 - off), 0.0, 1.0);
@@ -679,7 +671,6 @@ void InjectionOverlay::drawImpact(QPainter& p, const QPointF& c) {
         }
     }
 
-    // 中心爆发光斑
     if (g < 0.7) {
         const qreal bl = 1.0 - g / 0.7;
         QRadialGradient halo(c, 200.0);
@@ -694,7 +685,6 @@ void InjectionOverlay::drawImpact(QPainter& p, const QPointF& c) {
         p.drawEllipse(c, 200.0, 200.0);
     }
 
-    // ★ 成功时短暂白光爆闪 (g < 0.25 时最亮)
     if (injectOk_ && g < 0.25) {
         const qreal flash = 1.0 - g / 0.25;
         const QRectF r = QRectF(rect());
@@ -746,7 +736,6 @@ void InjectionOverlay::drawProgressBar(QPainter& p, const QRectF& r, qreal t) {
             g.setColorAt(0.5, QColor("#60e090"));
             g.setColorAt(1.0, QColor("#90ffb8"));
         } else {
-            // 色相随进度漂移
             const QColor c0 = hueShift(QColor("#4066d8"), progress_ * 80.0);
             const QColor c1 = hueShift(QColor("#70a8ff"), progress_ * 80.0);
             const QColor c2 = hueShift(QColor("#b0d8ff"), progress_ * 80.0);
@@ -868,7 +857,6 @@ void InjectionOverlay::paintEvent(QPaintEvent*) {
     p.setOpacity(panelOpacity_);
     p.setClipPath(panel);
 
-    // 1. 深空底色
     {
         QRadialGradient bg(rect.center() + QPointF(0, 30), rect.width() * 0.8);
         bg.setColorAt(0.0, QColor("#1a1530"));
@@ -877,29 +865,24 @@ void InjectionOverlay::paintEvent(QPaintEvent*) {
         p.fillPath(panel, bg);
     }
 
-    // 2. 各层
     drawNebula(p, rect, t);
     drawStars(p, rect, t);
 
     const QPointF center(rect.center().x(), rect.top() + 130);
 
-    drawHelixArms(p, center, t);   // 螺旋星臂
+    drawHelixArms(p, center, t);
     drawGrid(p, rect, t);
-    drawHexShield(p, center, t);   // 六边形护盾
+    drawHexShield(p, center, t);
     drawDataRain(p, rect, t);
     drawEnergyRays(p, center, t);
-    drawRingStream(p, center, t);  // 环形数据流
+    drawRingStream(p, center, t);
     drawShockwaves(p, center, t);
     drawSpinner(p, center, t);
     drawScanLine(p, rect, t);
 
-    // 粒子
     drawParticles(p);
-
-    // 爆炸
     drawImpact(p, center);
 
-    // 状态文字
     {
         QFont f(QStringLiteral("Segoe UI"));
         f.setPointSize(13);
@@ -922,7 +905,6 @@ void InjectionOverlay::paintEvent(QPaintEvent*) {
         p.drawText(base, statusText_);
     }
 
-    // 副标题
     {
         QFont f(QStringLiteral("Segoe UI"));
         f.setPointSize(9);
@@ -942,10 +924,8 @@ void InjectionOverlay::paintEvent(QPaintEvent*) {
         p.drawText(QPointF(rect.center().x() - sw / 2, rect.top() + 224), sub);
     }
 
-    // 进度条
     drawProgressBar(p, rect, t);
 
-    // 玻璃 + 边框 + 四角
     p.setClipping(false);
     drawGlassAndBorder(p, rect, t);
 }

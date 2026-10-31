@@ -25,6 +25,7 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import client.nilore.ClientBase;
 import client.nilore.modules.impl.combat.KillAura;
+import client.nilore.utils.math.FastMath;
 import client.nilore.utils.math.MathUtil;
 import client.nilore.utils.rotation.Rotation;
 import client.nilore.utils.rotation.RotationHandler;
@@ -90,6 +91,7 @@ public final class RotationUtil
         double dx = to.x - from.x;
         double dy = to.y - from.y;
         double dz = to.z - from.z;
+        // hypot 内部带溢出/下溢保护（两次缩放 + 一次 sqrt），这里的坐标量级永远到不了那一步。
         double horizontalDist = Math.sqrt(dx * dx + dz * dz);
         float yaw = RotationUtil.toDegrees(Math.atan2(dz, dx)) - 90.0f;
         float pitch = RotationUtil.toDegrees(-Math.atan2(dy, horizontalDist));
@@ -530,8 +532,15 @@ public final class RotationUtil
     }
 
     /** Kept under the reach limit: while a knockback is withheld the server measures from a position
-     *  our client has not reached yet, and Grim's own offset for that ran around 0.03. */
-    private static final double REACH_MARGIN = 0.05;
+     *  our client has not reached yet, and Grim's own offset for that ran around 0.03.
+     *
+     *  <p>Originally 0.05, which was charged <em>twice</em> per attack: once here and once more by
+     *  KillAura's own {@code sightRange = reach - REACH_MARGIN}. With Reach at 3.0 that left an
+     *  effective ceiling of 2.95, so a target sitting at 2.96~3.00 was rejected by both the distance
+     *  gate and the visibility gate every single tick — the "sometimes it just stops hitting at 3.0"
+     *  report. 0.01 keeps a millimetre-scale margin against the server's own 3.0 check without
+     *  eating a fifth of a block of reach. */
+    public static final double REACH_MARGIN = 0.01;
 
     public static boolean isWithinReach(Entity entity) {
         if (entity == null || mc.player == null) {
@@ -573,10 +582,14 @@ public final class RotationUtil
     }
 
     public static Vec3 getDirection(float yaw, float pitch) {
-        float cosYaw = Mth.cos(-yaw * ((float)Math.PI / 180) - (float)Math.PI);
-        float sinYaw = Mth.sin(-yaw * ((float)Math.PI / 180) - (float)Math.PI);
-        float cosPitch = -Mth.cos(-pitch * ((float)Math.PI / 180));
-        float sinPitch = Mth.sin(-pitch * ((float)Math.PI / 180));
+        // FastMath 关闭时逐字回落到 Mth 的查表实现，行为与原版一致；开启时走 4096 项插值表。
+        // 两者都在 {@link client.nilore.utils.math.FastMath} 里按同一套弧度约定换算。
+        float yawRad = -yaw * ((float) Math.PI / 180) - (float) Math.PI;
+        float pitchRad = -pitch * ((float) Math.PI / 180);
+        float cosYaw = FastMath.cos(yawRad);
+        float sinYaw = FastMath.sin(yawRad);
+        float cosPitch = -FastMath.cos(pitchRad);
+        float sinPitch = FastMath.sin(pitchRad);
         return new Vec3(sinYaw * cosPitch, sinPitch, cosYaw * cosPitch);
     }
 
@@ -677,7 +690,7 @@ public final class RotationUtil
 
     public static Rotation rotationToPoint(Vec3 from, Vec3 to) {
         Vec3 delta = to.subtract(from);
-        double horizontalDist = Math.hypot(delta.x, delta.z);
+        double horizontalDist = Math.sqrt(delta.x * delta.x + delta.z * delta.z);
         float yaw = (float)(Math.toDegrees(Math.atan2(delta.z, delta.x)) - 90.0);
         float pitch = (float)(-Math.toDegrees(Math.atan2(delta.y, horizontalDist)));
         Rotation current = RotationHandler.prevRotation;
@@ -730,6 +743,39 @@ public final class RotationUtil
         }
         AABB aabb = EntityUtil.getInterpolatedAABB(entity, partialTicks);
         Vec3 interpolatedPos = EntityUtil.getInterpolatedPos(entity, partialTicks);
+        Vec3 eye = mc.player.getEyePosition();
+
+        // Up to nine raycasts per call (1 + 4 fractions x 2 columns), and KillAura asks for the same
+        // answer twice per tick (aim + the attack gate). Memoise on everything the answer depends
+        // on; any movement of either party invalidates it because the key holds both boxes.
+        long tick = mc.level.getGameTime();
+        if (entity == aimCacheEntity && tick == aimCacheTick && allowOccluded == aimCacheAllowOccluded
+                && range == aimCacheRange
+                && eye.equals(aimCacheEye)
+                && interpolatedPos.equals(aimCacheInterpolatedPos)
+                && aabb.minX == aimCacheMinX && aabb.minY == aimCacheMinY && aabb.minZ == aimCacheMinZ
+                && aabb.maxX == aimCacheMaxX && aabb.maxY == aimCacheMaxY && aabb.maxZ == aimCacheMaxZ) {
+            return aimCacheResult;
+        }
+
+        Vec3 result = RotationUtil.searchAimPoint(entity, range, aabb, interpolatedPos, allowOccluded);
+        aimCacheEntity = entity;
+        aimCacheTick = tick;
+        aimCacheAllowOccluded = allowOccluded;
+        aimCacheRange = range;
+        aimCacheEye = eye;
+        aimCacheInterpolatedPos = interpolatedPos;
+        aimCacheMinX = aabb.minX;
+        aimCacheMinY = aabb.minY;
+        aimCacheMinZ = aabb.minZ;
+        aimCacheMaxX = aabb.maxX;
+        aimCacheMaxY = aabb.maxY;
+        aimCacheMaxZ = aabb.maxZ;
+        aimCacheResult = result;
+        return result;
+    }
+
+    private static Vec3 searchAimPoint(Entity entity, double range, AABB aabb, Vec3 interpolatedPos, boolean allowOccluded) {
         double eyeHeight = entity.getEyeHeight();
         Vec3 eyePoint = interpolatedPos.add(0.0, eyeHeight, 0.0);
         Vec3 fallback = mc.level.getBlockState(BlockPos.containing(eyePoint)).is(Blocks.COBWEB)
@@ -758,6 +804,20 @@ public final class RotationUtil
         return allowOccluded ? fallback : null;
     }
 
+    private static Entity aimCacheEntity;
+    private static long aimCacheTick = Long.MIN_VALUE;
+    private static boolean aimCacheAllowOccluded;
+    private static double aimCacheRange;
+    private static Vec3 aimCacheEye;
+    private static Vec3 aimCacheInterpolatedPos;
+    private static double aimCacheMinX;
+    private static double aimCacheMinY;
+    private static double aimCacheMinZ;
+    private static double aimCacheMaxX;
+    private static double aimCacheMaxY;
+    private static double aimCacheMaxZ;
+    private static Vec3 aimCacheResult;
+
     public static Vec3 findAimPoint(Entity entity, double range) {
         return RotationUtil.findAimPoint(entity, range, 1.0f);
     }
@@ -778,7 +838,22 @@ public final class RotationUtil
         if (entity == null || mc.player == null || mc.level == null) {
             return false;
         }
-        HitResult hit = RotationUtil.rayTraceForAim(currentAimRotation(), range, entity, entity.getBoundingBox().inflate(inflate));
+        return isLookingAt(entity, range, inflate, currentAimRotation());
+    }
+
+    /**
+     * 用**显式给定**的朝向做命中判定。
+     *
+     * <p>当动作包被安排在移动包之前发送时(vanilla 的攻击就是这个位置), 服务端此刻持有的
+     * 朝向还是上一 tick 发出去的那个, 它也会用那个角度去校验这次交互。所以本地判定必须
+     * 用同一个角度 —— 用本 tick 刚算出来的新朝向会让"本地认为打得到 / 服务端按旧角度算
+     * 却是空挥", 也就是 Grim 侧看到的 Reach/Hitboxes 抖动。
+     */
+    public static boolean isLookingAt(Entity entity, double range, float inflate, Rotation rotation) {
+        if (entity == null || mc.player == null || mc.level == null || rotation == null) {
+            return false;
+        }
+        HitResult hit = RotationUtil.rayTraceForAim(rotation, range, entity, entity.getBoundingBox().inflate(inflate));
         return hit instanceof EntityHitResult entityHit && entityHit.getEntity() == entity;
     }
 

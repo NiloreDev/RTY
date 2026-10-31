@@ -1,7 +1,6 @@
 #include "MainWindow.h"
 #include "SplashScreen.h"
 #include "autoquit.h"
-#include "hwid_spoof_settings.h"
 
 #include <QApplication>
 #include <QStyleFactory>
@@ -22,11 +21,6 @@ int main(int argc, char** argv) {
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     QApplication::setApplicationName(QStringLiteral("OpenNilore Loader"));
     QApplication::setOrganizationName(QStringLiteral("OpenNilore"));
-
-    // Apply the persisted HWID spoof settings so the loader's own process (and
-    // anything that consults hwidspoof::) reflects the user's choice from the
-    // very first tick. Re-applied on toggle change in SettingsPage.
-    loader::apply_hwid_spoof();
 
     // Main window is constructed up front but kept hidden until the splash
     // emits finished(), so its windowOpacity starts at 0 (set in showEvent

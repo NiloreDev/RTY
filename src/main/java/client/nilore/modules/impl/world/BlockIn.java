@@ -1,21 +1,26 @@
 package client.nilore.modules.impl.world;
 
 import com.mojang.blaze3d.platform.InputConstants;
+
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
+
 import net.minecraft.client.KeyMapping;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+
 import client.nilore.event.EventTarget;
 import client.nilore.event.impl.TickEvent;
 import client.nilore.modules.Category;
@@ -29,13 +34,14 @@ import client.nilore.utils.game.BlockUtil;
 import client.nilore.utils.game.RayTraceUtil;
 import client.nilore.utils.game.RotationUtil;
 import client.nilore.utils.misc.ChatUtil;
+import client.nilore.utils.misc.PacketUtil;
 import client.nilore.utils.render.BlockInESP;
 import client.nilore.utils.rotation.Rotation;
-import client.nilore.utils.rotation.RotationHandler;
 
 public class BlockIn extends Module {
     public static BlockIn INSTANCE;
 
+    // ==================== 基础设置 ====================
     public final BooleanSetting autoDisable = new BooleanSetting("Auto Disable", true);
     public final ModeSetting placeOrder = new ModeSetting("Place Order", "Normal", "Normal", "Random", "BottomTop", "TopBottom").withDefault("Normal");
     public final BooleanSetting autoBlock = new BooleanSetting("Auto Block", true);
@@ -44,20 +50,29 @@ public class BlockIn extends Module {
     public final NumberSetting range = new NumberSetting("Range", 4.5, 1.0, 6.0, 0.1);
     public final NumberSetting cooldown = new NumberSetting("Cooldown", 1, 0, 20, 1);
     public final BooleanSetting rotation = new BooleanSetting("Rotation", true);
-    public final BooleanSetting smooth = new BooleanSetting("Smooth", false, () -> this.rotation.getValue());
-    public final NumberSetting rotationTicks = new NumberSetting("Rotation Ticks", 3, 1, 6, 1, () -> this.rotation.getValue() && this.smooth.getValue());
+    public final BooleanSetting smooth = new BooleanSetting("Smooth", true, () -> this.rotation.getValue());
+    public final NumberSetting rotationTicks = new NumberSetting("Rotation Ticks", 2, 1, 6, 1, () -> this.rotation.getValue() && this.smooth.getValue());
+
+    // ==================== Roof Support（含第 2 版逻辑增强）====================
     public final BooleanSetting roofSupport = new BooleanSetting("Roof Support", true);
     public final BooleanSetting diagonalSupport = new BooleanSetting("Diagonal Support", true);
     public final BooleanSetting pillarSupport = new BooleanSetting("Pillar Support", true);
     public final BooleanSetting useJump = new BooleanSetting("Use Jump", true);
-    public final NumberSetting jumpTicks = new NumberSetting("Jump Ticks", 2, 1, 8, 1);
+    public final NumberSetting jumpTicks = new NumberSetting("Jump Ticks", 1, 1, 8, 1);
+
     public final BooleanSetting debug = new BooleanSetting("Debug", false);
 
-    // ==================== ESP 相关开关 ====================
+    // ==================== ESP ====================
     public final BooleanSetting espEnabled = new BooleanSetting("ESP", true);
     public final NumberSetting espDuration = new NumberSetting("ESP Duration", 2.0, 0.1, 10.0, 0.1);
+    // 5 种颜色。BlockInESP 通过 getEspColorARGB() / getEspColorR/G/B 读取，
+    // 切换模式时 ESP 立即变色（前提是 BlockInESP 用的是 getter，见文末）。
+    public final ModeSetting espColor = new ModeSetting("ESP Color", "Purple",
+            "Red", "Green", "Blue", "Yellow", "Purple").withDefault("Purple");
 
+    // ==================== 运行时状态 ====================
     public Rotation targetRotation = null;
+    private static final int OFFHAND_SLOT = 40;
     private BlockPos startPos;
     private boolean rotateClockwise;
     private int oldSlot = -1;
@@ -71,17 +86,16 @@ public class BlockIn extends Module {
     private boolean moduleJumpDown;
     private boolean waitingLanding;
 
-    // ESP 数据存储
+    // ESP：位置 -> 放置时间戳（毫秒）
     private final Map<BlockPos, Long> espBlocks = new ConcurrentHashMap<>();
 
     public BlockIn() {
         super("BlockIn", Category.WORLD);
         INSTANCE = this;
-        // 自动注册 Forge 渲染事件
         BlockInESP.bootstrap();
     }
 
-    // ==================== ESP 公共接口 ====================
+    // ==================== ESP 对外接口 ====================
     public boolean isEspEnabled() {
         return this.espEnabled.getValue();
     }
@@ -89,11 +103,27 @@ public class BlockIn extends Module {
     public List<BlockPos> getEspBlocks() {
         long now = System.currentTimeMillis();
         long durationMs = (long) (this.espDuration.getValue().doubleValue() * 1000.0);
-        // 清理过期方块
         this.espBlocks.entrySet().removeIf(entry -> now - entry.getValue() > durationMs);
         return new ArrayList<>(this.espBlocks.keySet());
     }
 
+    /** 当前 ESP 颜色的 ARGB 值（5 选 1）。 */
+    public int getEspColorARGB() {
+        String c = this.espColor.getValue();
+        if ("Red".equals(c))    return 0xFFFF4D4D;
+        if ("Green".equals(c))  return 0xFF4DFF88;
+        if ("Blue".equals(c))   return 0xFF4D9EFF;
+        if ("Yellow".equals(c)) return 0xFFFFD54D;
+        /* Purple */            return 0xFFB84DFF;
+    }
+
+    /** 0f~1f 分量，方便直接传 GL。 */
+    public float getEspColorR() { return ((getEspColorARGB() >> 16) & 0xFF) / 255.0f; }
+    public float getEspColorG() { return ((getEspColorARGB() >> 8)  & 0xFF) / 255.0f; }
+    public float getEspColorB() { return ( getEspColorARGB()        & 0xFF) / 255.0f; }
+    public float getEspColorA() { return ((getEspColorARGB() >> 24) & 0xFF) / 255.0f; }
+
+    // ==================== 生命周期 ====================
     @Override
     protected void onEnable() {
         if (Scaffold.INSTANCE != null && Scaffold.INSTANCE.isEnabled()) {
@@ -143,8 +173,10 @@ public class BlockIn extends Module {
 
     @Override
     public void onTick() {
+
     }
 
+    // ==================== 主 Tick ====================
     @EventTarget(value = 1)
     public void onTick(TickEvent event) {
         if (mc.player == null || mc.level == null || mc.gameMode == null || this.startPos == null) {
@@ -154,7 +186,7 @@ public class BlockIn extends Module {
         BlockPos currentPos = mc.player.blockPosition();
         if (!currentPos.equals(this.startPos) && !currentPos.equals(this.startPos.above())) {
             if (this.debug.getValue()) {
-                ChatUtil.print("[BlockIn] Player moved away, disabling.");
+                ChatUtil.print("[BlockIn] Moved away, disabling");
             }
             this.setEnabled(false);
             return;
@@ -171,7 +203,7 @@ public class BlockIn extends Module {
         if (positions.isEmpty()) {
             if (this.autoDisable.getValue() && this.isComplete()) {
                 if (this.debug.getValue()) {
-                    ChatUtil.print("[BlockIn] Structure complete, disabling.");
+                    ChatUtil.print("[BlockIn] Complete, disabling");
                 }
                 this.setEnabled(false);
             }
@@ -187,38 +219,46 @@ public class BlockIn extends Module {
 
         if (this.autoDisable.getValue() && this.isComplete()) {
             if (this.debug.getValue()) {
-                ChatUtil.print("[BlockIn] Structure complete, disabling.");
+                ChatUtil.print("[BlockIn] Complete, disabling");
             }
             this.setEnabled(false);
         }
     }
 
+    // ==================== 位置生成 ====================
     private List<BlockPos> generatePositions() {
+        LinkedHashSet<BlockPos> result = new LinkedHashSet<>();
         if (mc.player == null || this.startPos == null) {
             return List.of();
         }
 
         int playerHeight = Mth.ceil(mc.player.getBbHeight());
-        int totalHeight = playerHeight;
-        this.roofPos = this.startPos.above(totalHeight);
+        this.roofPos = this.startPos.above(playerHeight);
+
+        if (this.waitingLanding && !mc.player.onGround()) {
+            return List.of();
+        }
+
+        boolean baseComplete = this.isBaseComplete(playerHeight);
 
         List<BlockPos> baseBlocks = new ArrayList<>();
         baseBlocks.add(this.startPos.below());
-
         for (Direction dir : this.getOrderedDirections()) {
             BlockPos wallBase = this.startPos.relative(dir);
-            for (int i = 0; i < totalHeight; i++) {
+            for (int i = 0; i < playerHeight; i++) {
                 baseBlocks.add(wallBase.above(i));
             }
         }
 
         List<BlockPos> ordered = this.orderPositions(baseBlocks);
 
-        BlockPos support = this.updateRoofSupport(totalHeight);
-        if (support != null) {
-            ordered.add(support);
+        if (baseComplete) {
+            BlockPos support = this.updateRoofSupport(playerHeight);
+            if (support != null) {
+                ordered.add(support);
+            }
+            ordered.add(this.roofPos);
         }
-        ordered.add(this.roofPos);
 
         return ordered;
     }
@@ -235,6 +275,7 @@ public class BlockIn extends Module {
         return positions;
     }
 
+    // ==================== 放置 ====================
     private boolean tryPlaceBlock(BlockPos targetPos) {
         if (mc.player == null || mc.level == null || mc.gameMode == null) {
             return false;
@@ -248,6 +289,7 @@ public class BlockIn extends Module {
         Direction face = null;
         BlockPos againstPos = null;
 
+        // Roof 特殊路径：如果 roof support 已放置，直接从它上面搭 roof
         if (isRoof && this.roofSupportPos != null && BlockUtil.isSolid(this.roofSupportPos)) {
             for (Direction d : Direction.values()) {
                 if (this.roofSupportPos.relative(d).equals(targetPos)) {
@@ -258,6 +300,7 @@ public class BlockIn extends Module {
             }
         }
 
+        // 通用路径：靠周围最近的实心方块
         if (face == null) {
             face = this.findPlacementFace(targetPos);
             if (face != null) {
@@ -277,6 +320,7 @@ public class BlockIn extends Module {
                 againstPos.getY() + 0.5 + face.getStepY() * 0.5,
                 againstPos.getZ() + 0.5 + face.getStepZ() * 0.5);
 
+        // Range 检查
         double distSq = mc.player.getEyePosition().distanceToSqr(hitVec);
         double maxRange = this.range.getValue().doubleValue();
         if (distSq > maxRange * maxRange) {
@@ -289,7 +333,6 @@ public class BlockIn extends Module {
 
         if (this.rotation.getValue()) {
             Rotation targetRot = RotationUtil.rotationFromVec(hitVec);
-
             if (this.smooth.getValue() && mc.player != null) {
                 Rotation currentRot = this.targetRotation != null
                         ? this.targetRotation
@@ -300,15 +343,16 @@ public class BlockIn extends Module {
                 this.targetRotation = targetRot;
             }
 
-            if (RotationHandler.targetRotation != null) {
-                boolean canRayTrace = RayTraceUtil.canRayTrace(RotationHandler.targetRotation, face, againstPos, false);
-                if (!canRayTrace) {
-                    if (this.debug.getValue()) {
-                        ChatUtil.print("[BlockIn] Failed at " + fmtPos(targetPos) + ": Raytrace blocked.");
-                    }
-                    return false;
+            if (this.targetRotation == null
+                    || !RayTraceUtil.canRayTrace(this.targetRotation, face, againstPos, false)) {
+                if (this.debug.getValue()) {
+                    ChatUtil.print("[BlockIn] Failed at " + fmtPos(targetPos) + ": Raytrace blocked.");
                 }
+                return false;
             }
+
+            PacketUtil.sendQueued(new ServerboundMovePlayerPacket.Rot(
+                    this.targetRotation.getYaw(), this.targetRotation.getPitch(), mc.player.onGround()));
         } else {
             this.targetRotation = null;
         }
@@ -319,16 +363,19 @@ public class BlockIn extends Module {
             return false;
         }
 
-        if (placeSlot != 40 && mc.player.getInventory().selected != placeSlot) {
+        InteractionHand hand = InteractionHand.MAIN_HAND;
+        if (placeSlot == OFFHAND_SLOT) {
+            hand = InteractionHand.OFF_HAND;
+        } else if (placeSlot != mc.player.getInventory().selected) {
             mc.player.getInventory().selected = placeSlot;
         }
 
         BlockHitResult hit = new BlockHitResult(hitVec, face, againstPos, false);
 
-        var result = mc.gameMode.useItemOn(mc.player, InteractionHand.MAIN_HAND, hit);
+        var result = mc.gameMode.useItemOn(mc.player, hand, hit);
         if (result.consumesAction()) {
-            mc.player.swing(InteractionHand.MAIN_HAND);
-            // 记录到 ESP
+            mc.player.swing(hand);
+            // ESP 记录
             this.espBlocks.put(targetPos.immutable(), System.currentTimeMillis());
             if (this.debug.getValue()) {
                 ChatUtil.print("[BlockIn] Placed at " + this.fmtPos(targetPos));
@@ -338,11 +385,7 @@ public class BlockIn extends Module {
         return false;
     }
 
-    /**
-     * BlockPlacer style target search.
-     * Does not rotate like BlockPlacer. It only borrows its placement analysis:
-     * search reachable support blocks and choose a valid hit point.
-     */
+    // 增强版：遍历 6 个面 + 27 个采样点，选最近可用的放置面
     private Direction findPlacementFace(BlockPos targetPos) {
         if (mc.level == null || mc.player == null) return null;
 
@@ -352,13 +395,10 @@ public class BlockIn extends Module {
 
         for (Direction face : Direction.values()) {
             BlockPos support = targetPos.relative(face);
-
             if (mc.level.getBlockState(support).canBeReplaced()) {
                 continue;
             }
 
-            // Sample several points on the support face instead of only center.
-            // This avoids the "turns but cannot place" case.
             for (double ox : new double[]{0.25, 0.5, 0.75}) {
                 for (double oy : new double[]{0.25, 0.5, 0.75}) {
                     for (double oz : new double[]{0.25, 0.5, 0.75}) {
@@ -367,11 +407,7 @@ public class BlockIn extends Module {
                                 support.getY() + oy,
                                 support.getZ() + oz
                         );
-
-                        if (!isValidPlaceHit(support, hit)) {
-                            continue;
-                        }
-
+                        if (!isValidPlaceHit(support, hit)) continue;
                         double score = eye.distanceToSqr(hit);
                         if (score < bestScore) {
                             bestScore = score;
@@ -381,22 +417,15 @@ public class BlockIn extends Module {
                 }
             }
         }
-
         return best;
     }
 
-    /**
-     * Check if the hit vector is actually inside the support block face.
-     * This is intentionally separate from rotation logic.
-     */
     private boolean isValidPlaceHit(BlockPos support, Vec3 hit) {
         if (mc.player == null || mc.level == null) return false;
-
         double range = this.range.getValue().doubleValue();
         if (mc.player.getEyePosition(1.0f).distanceToSqr(hit) > range * range) {
             return false;
         }
-
         return BlockUtil.isSolid(support);
     }
 
@@ -424,7 +453,7 @@ public class BlockIn extends Module {
         if (this.useOffhand.getValue()) {
             ItemStack offhand = mc.player.getOffhandItem();
             if (offhand.getItem() instanceof BlockItem && BlockUtil.isPlaceable(offhand)) {
-                return 40;
+                return OFFHAND_SLOT;
             }
         }
 
@@ -444,7 +473,8 @@ public class BlockIn extends Module {
         this.oldSlot = -1;
     }
 
-    private BlockPos updateRoofSupport(int totalHeight) {
+    // ==================== Roof Support ====================
+    private BlockPos updateRoofSupport(int playerHeight) {
         if (mc.player == null || mc.level == null || this.startPos == null || this.roofPos == null) {
             this.clearRoofSupport("no-player");
             return null;
@@ -453,19 +483,20 @@ public class BlockIn extends Module {
             this.clearRoofSupport("disabled");
             return null;
         }
-
         if (BlockUtil.isSolid(this.roofPos)) {
             this.clearRoofSupport("roof-done");
             return null;
         }
-
         if (this.findPlacementFace(this.roofPos) != null) {
             this.clearRoofSupport("roof-direct");
             return null;
         }
+        if (!this.isBaseComplete(playerHeight)) {
+            this.clearRoofSupport("base-pending");
+            return null;
+        }
 
-        // 新的 roof 路径搜索：模拟 BlockPlacer 的思路，不直接转头硬放。
-        // 在 range 内寻找已有方块 -> 可放辅助方块 -> roof 的合法链。
+        // 增强 1：从周围实心方块搭桥通往 roofPos
         BlockPos pathSupport = this.findRoofPlacementPath();
         if (pathSupport != null) {
             this.roofSupportPos = pathSupport;
@@ -479,7 +510,7 @@ public class BlockIn extends Module {
         }
 
         if (this.diagonalSupport.getValue()) {
-            BlockPos diag = this.findDiagonalSupport(totalHeight);
+            BlockPos diag = this.findDiagonalSupport(playerHeight);
             if (diag != null) {
                 this.roofPhase = RoofPhase.DIAGONAL;
                 this.roofSupportPos = diag;
@@ -488,7 +519,8 @@ public class BlockIn extends Module {
             }
         }
 
-        BlockPos nearby = this.findNearbyRoofSupport(totalHeight);
+        // 增强 2：从 roofPos 附近找可替换方块作为放置起点
+        BlockPos nearby = this.findNearbyRoofSupport(playerHeight);
         if (nearby != null) {
             this.roofPhase = RoofPhase.DIAGONAL;
             this.roofSupportPos = nearby;
@@ -497,7 +529,7 @@ public class BlockIn extends Module {
         }
 
         if (this.pillarSupport.getValue() && this.useJump.getValue()) {
-            BlockPos jump = this.findPillarSupport(totalHeight);
+            BlockPos jump = this.findPillarSupport(playerHeight);
             if (jump != null) {
                 this.roofPhase = RoofPhase.JUMP_PILLAR;
                 this.roofSupportPos = jump;
@@ -507,7 +539,7 @@ public class BlockIn extends Module {
         }
 
         if (this.pillarSupport.getValue()) {
-            BlockPos pillar = this.findPillarSupport(totalHeight);
+            BlockPos pillar = this.findPillarSupport(playerHeight);
             if (pillar != null) {
                 this.roofPhase = RoofPhase.PILLAR;
                 this.roofSupportPos = pillar;
@@ -520,38 +552,24 @@ public class BlockIn extends Module {
         return null;
     }
 
-
-
-    /**
-     * Range based placement path search.
-     *
-     * 不是复制 BlockPlacer 的 rotation，而是分析它的核心：
-     * 先找到可点击的已有方块，再寻找能连接到目标的位置。
-     */
-    /**
-     * Searches the configured range for a block that can actually be used
-     * to complete the roof. Supports:
-     * 1. existing block -> roof
-     * 2. existing block -> bridge -> roof
-     */
+    // 在 roofPos 周围的实心方块里找一条到 roofPos 的搭桥路径
     private BlockPos findRoofPlacementPath() {
         if (this.roofPos == null || mc.level == null) return null;
 
-        int r = (int)Math.ceil(this.range.getValue().doubleValue());
+        int r = (int) Math.ceil(this.range.getValue().doubleValue());
         List<BlockPos> solids = new ArrayList<>();
 
-        for (int x=-r;x<=r;x++) {
-            for (int y=-r;y<=r;y++) {
-                for (int z=-r;z<=r;z++) {
-                    BlockPos p = this.roofPos.offset(x,y,z);
+        for (int x = -r; x <= r; x++) {
+            for (int y = -r; y <= r; y++) {
+                for (int z = -r; z <= r; z++) {
+                    BlockPos p = this.roofPos.offset(x, y, z);
                     if (BlockUtil.isSolid(p)) solids.add(p);
                 }
             }
         }
+        solids.sort((a, b) -> Double.compare(a.distSqr(this.roofPos), b.distSqr(this.roofPos)));
 
-        solids.sort((a,b)->Double.compare(a.distSqr(this.roofPos), b.distSqr(this.roofPos)));
-
-        // direct support
+        // 直接相邻
         for (BlockPos support : solids) {
             for (Direction d : Direction.values()) {
                 if (support.relative(d).equals(this.roofPos)
@@ -561,7 +579,7 @@ public class BlockIn extends Module {
             }
         }
 
-        // bridge search
+        // 桥接（放一块中间方块，再从它上面放到 roofPos）
         for (BlockPos support : solids) {
             for (Direction d : Direction.values()) {
                 BlockPos bridge = support.relative(d);
@@ -575,41 +593,16 @@ public class BlockIn extends Module {
                         && !bridge.relative(Direction.WEST).equals(this.roofPos)) {
                     continue;
                 }
-
                 if (findPlacementFace(bridge) != null) {
                     return bridge;
                 }
             }
         }
-
         return null;
     }
 
-    private BlockPos findDiagonalSupport(int totalHeight) {
-        int[] offsets = {-1, 1};
-        for (int dx : offsets) {
-            for (int dz : offsets) {
-                BlockPos diagonal = this.startPos.offset(dx, totalHeight, dz);
-                if (!BlockUtil.isSolid(diagonal)) continue;
-                BlockPos xSupport = this.startPos.offset(dx, totalHeight, 0);
-                if (!BlockUtil.isSolid(xSupport) && this.findPlacementFace(xSupport) != null) {
-                    return xSupport;
-                }
-                BlockPos zSupport = this.startPos.offset(0, totalHeight, dz);
-                if (!BlockUtil.isSolid(zSupport) && this.findPlacementFace(zSupport) != null) {
-                    return zSupport;
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Range based roof helper scan.
-     * Scans the whole configured range around the roof (including above and below)
-     * to find a legal helper position instead of only checking a few blocks.
-     */
-    private BlockPos findNearbyRoofSupport(int totalHeight) {
+    // 在 roofPos 附近扫描可替换方块，作为 roof 起始支撑
+    private BlockPos findNearbyRoofSupport(int playerHeight) {
         if (this.roofPos == null || mc.level == null || mc.player == null) return null;
 
         int radius = Math.max(1, (int) Math.ceil(this.range.getValue().doubleValue()));
@@ -623,7 +616,6 @@ public class BlockIn extends Module {
                 }
             }
         }
-
         candidates.sort((a, b) -> Double.compare(a.distSqr(this.roofPos), b.distSqr(this.roofPos)));
 
         for (BlockPos candidate : candidates) {
@@ -644,9 +636,28 @@ public class BlockIn extends Module {
         return null;
     }
 
-    private BlockPos findPillarSupport(int totalHeight) {
+    private BlockPos findDiagonalSupport(int playerHeight) {
+        int[] offsets = {-1, 1};
+        for (int dx : offsets) {
+            for (int dz : offsets) {
+                BlockPos diagonal = this.startPos.offset(dx, playerHeight, dz);
+                if (!BlockUtil.isSolid(diagonal)) continue;
+                BlockPos xSupport = this.startPos.offset(dx, playerHeight, 0);
+                if (!BlockUtil.isSolid(xSupport) && this.findPlacementFace(xSupport) != null) {
+                    return xSupport;
+                }
+                BlockPos zSupport = this.startPos.offset(0, playerHeight, dz);
+                if (!BlockUtil.isSolid(zSupport) && this.findPlacementFace(zSupport) != null) {
+                    return zSupport;
+                }
+            }
+        }
+        return null;
+    }
+
+    private BlockPos findPillarSupport(int playerHeight) {
         for (Direction dir : this.getOrderedDirections()) {
-            BlockPos support = this.startPos.relative(dir).above(totalHeight);
+            BlockPos support = this.startPos.relative(dir).above(playerHeight);
             if (!BlockUtil.isSolid(support) && BlockUtil.isSolid(support.below()) && this.findPlacementFace(support) != null) {
                 return support;
             }
@@ -654,16 +665,25 @@ public class BlockIn extends Module {
         return null;
     }
 
+    private boolean isBaseComplete(int playerHeight) {
+        if (mc.player == null || this.startPos == null) return false;
+        if (!BlockUtil.isSolid(this.startPos.below())) return false;
+        for (Direction dir : this.getOrderedDirections()) {
+            BlockPos wallBase = this.startPos.relative(dir);
+            for (int i = 0; i < playerHeight; i++) {
+                if (!BlockUtil.isSolid(wallBase.above(i))) return false;
+            }
+        }
+        return true;
+    }
+
     private boolean isComplete() {
         if (mc.player == null || this.startPos == null) return false;
         int playerHeight = Mth.ceil(mc.player.getBbHeight());
-        int totalHeight = playerHeight;
-
         if (!BlockUtil.isSolid(this.startPos.below())) return false;
-
         for (Direction dir : this.getOrderedDirections()) {
             BlockPos wallBase = this.startPos.relative(dir);
-            for (int i = 0; i < totalHeight; i++) {
+            for (int i = 0; i < playerHeight; i++) {
                 if (!BlockUtil.isSolid(wallBase.above(i))) return false;
             }
         }
@@ -671,6 +691,7 @@ public class BlockIn extends Module {
         return true;
     }
 
+    // ==================== 跳跃控制 ====================
     private void updateJumpControl() {
         if (mc.player == null || mc.options == null) return;
 

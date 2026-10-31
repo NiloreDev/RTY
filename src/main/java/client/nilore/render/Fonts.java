@@ -39,6 +39,16 @@ public final class Fonts {
         }
     }
 
+    /**
+     * 新增：计算设备缩放比例
+     * 用于解决报错并适配字体渲染清晰度
+     */
+    public static float deviceScale(float scale) {
+        // 基础倍数，可根据实际渲染效果微调（例如改为 1.0f, 2.0f 等）
+        float baseMultiplier = 2.0f;
+        return scale * baseMultiplier;
+    }
+
     private static Font loadAwtFont(String name) {
         try (InputStream stream = Assets.open("/assets/nilore/fonts/" + name)) {
             if (stream == null) {

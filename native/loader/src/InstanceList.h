@@ -12,7 +12,15 @@ class QLabel;
 namespace loader {
 
 class InstanceRow;
-struct Instance;
+
+// Shared data model for one detected Minecraft instance. Defined here (not
+// forward-declared) because InstanceList::setInstances / instanceForPid and
+// MainWindow::refreshNow all read .pid/.title/.commandLine directly.
+struct Instance {
+    unsigned long pid = 0;
+    QString       title;
+    QString       commandLine;
+};
 
 class InstanceList : public QWidget {
     Q_OBJECT

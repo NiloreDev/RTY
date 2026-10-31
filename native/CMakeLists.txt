@@ -5,9 +5,6 @@ cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
 project(OpenZenNative LANGUAGES CXX)
 
-# === 新增：开启 Qt 资源文件 (.qrc) 自动编译 ===
-set(CMAKE_AUTORCC ON)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

@@ -1546,7 +1546,7 @@ void MainWindow::animateRefreshButton() {
 }
 
 void MainWindow::maybeAutoInject(const std::vector<JavaProcess>& procs) {
-    if (!loader_settings::is_early_mode_enabled()) return;
+    if (!loader_settings::is_native_bypass_enabled()) return;
     if (injectionInFlight_) return;
 
     for (const JavaProcess& jp : procs) {
@@ -1606,13 +1606,13 @@ void MainWindow::refreshNow(bool animate) {
 
     list_->setInstances(filtered);
 
-    if (loader_settings::is_early_mode_enabled()) {
+    if (loader_settings::is_native_bypass_enabled()) {
         int matching = 0;
         for (const auto& jp : procs) {
             if (isMinecraft(jp.window_title, jp.window_class)) ++matching;
         }
         status_->setText(QStringLiteral(
-                "Early Mode — %1 java process(es) seen, %2 recognised.")
+                "Native Bypass — %1 java process(es) seen, %2 recognised.")
                 .arg((int)procs.size()).arg(matching));
     } else if (list_->count() == 0) {
         status_->setText(QStringLiteral("No Minecraft sessions detected"));
@@ -1622,7 +1622,7 @@ void MainWindow::refreshNow(bool animate) {
         status_->setText(QStringLiteral("%1 Minecraft sessions are ready").arg(list_->count()));
     }
 
-    if (loader_settings::is_early_mode_enabled()) {
+    if (loader_settings::is_native_bypass_enabled()) {
         maybeAutoInject(procs);
     }
 
@@ -1643,7 +1643,7 @@ void MainWindow::onInjectRequested(unsigned long pid, const QString& title,
     list_->setInteractive(false);
     if (timer_) timer_->stop();
 
-    const bool early = loader_settings::is_early_mode_enabled();
+    const bool early = loader_settings::is_native_bypass_enabled();
 
     auto* overlay = new InjectionOverlay(pid, title, commandLine, this);
     connect(overlay, &InjectionOverlay::completed, this,
@@ -1653,14 +1653,14 @@ void MainWindow::onInjectRequested(unsigned long pid, const QString& title,
                     if (pid) earlyHandled_.insert(pid);
 
                     if (early) {
-                        notify(QStringLiteral("OpenNilore"),
-                               QStringLiteral("Early Mode injected (pid %1)").arg(pid));
+                        notify(QStringLiteral("Nebula"),
+                               QStringLiteral("Native Bypass injected (pid %1)").arg(pid));
                     } else {
-                        notify(QStringLiteral("OpenNilore"),
+                        notify(QStringLiteral("Nebula"),
                                QStringLiteral("Injected into pid %1").arg(pid));
                     }
                 } else {
-                    notify(QStringLiteral("OpenNilore"),
+                    notify(QStringLiteral("Nebula"),
                            QStringLiteral("Injection failed"));
                 }
 
