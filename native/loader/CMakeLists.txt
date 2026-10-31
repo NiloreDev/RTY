@@ -50,11 +50,6 @@ qt_add_executable(OpenNiloreLoader WIN32
 
     src/hwid_spoof_settings.cpp
     src/hwid_spoof_settings.h
-    src/hwid_wmi.cpp
-    src/hwid_wmi.h
-
-    src/spoof_values.cpp
-    src/spoof_values.h
 
     src/process_list.cpp
     src/injector.cpp
@@ -94,7 +89,6 @@ target_link_libraries(OpenNiloreLoader PRIVATE
     dwmapi
     ole32
     oleaut32
-    wbemuuid
 
     # --- 显式补全（MSVC 默认库已含，但显式声明跨工具链更安全） ---
     # shell32   : SHGetKnownFolderPath          (loader_settings.cpp)
