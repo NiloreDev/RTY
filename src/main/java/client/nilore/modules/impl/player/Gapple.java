@@ -145,15 +145,6 @@ public class Gapple extends Module {
     }
 
     @Override
-    public void onTick() {
-<<<<<<< HEAD
-
-=======
-        
->>>>>>> de929dd8345f11926cc930b41a2e1efc97a775fc
-    }
-
-    @Override
     public String getDisplayName() {
         return "§fGapple";
     }
@@ -164,8 +155,4 @@ public class Gapple extends Module {
                 ? "Instant"
                 : String.valueOf(this.health.getValue().floatValue());
     }
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> de929dd8345f11926cc930b41a2e1efc97a775fc
