@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <objbase.h>
+#include <oleauto.h>
 #include <wbemidl.h>
 #include <psapi.h>
 
@@ -15,24 +16,32 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "psapi.lib")
-// NOTE: wbemuuid.lib / <wbemuuid.h> 不再需要。本文件只用到那两个众所周知的
-//       GUID 常量，下面就地定义。
+// NOTE: 不再 include <wbemuuid.h>，也不再 #pragma comment 链接 wbemuuid.lib。
+// 原因：MSVC 链接器对 /DEFAULTLIB 指向的、在搜索路径里找不到的库会静默忽略，
+// 结果就是 IID_IWbemServices / IID_IWbemLocator / IID_IEnumWbemClassObject
+// 三个符号始终没人定义，最终以 LNK2019 收场。下面把这 4 个 GUID 直接定义在
+// 本地，值与 SDK 完全一致，彻底摆脱这个依赖。
+// IID_IUnknown 不在这里定义——由 MSVC 默认链接的 uuid.lib 提供，从不缺。
 
-// ---- 本文件只需要这两个众所周知的 GUID -------------------------------------
-//
-// Windows SDK 的 <wbemuuid.h> 并不是每个工具集 / SDK 安装都会带（vcpkg 的
-// 精简 toolchain 里就常常缺），而它整个头文件的内容就是这两个常量定义。
-// 本文件除它们之外没有使用 <wbemuuid.h> 的任何东西，所以本地定义一份，
-// 彻底不依赖这个头文件，也就不用链接 wbemuuid.lib。
-//
-// 名字加上 k 前缀，避免将来 reintroduce <wbemuuid.h> 时与 SDK 里的
-// CLSID_WbemLocator / IID_IWbemLocator 撞名。
+// ============================================================================
+// 本地 GUID 常量（值等同 Windows SDK 的 CLSID_WbemLocator / IID_IWbem*）
+// 名字加 k 前缀，避免将来 reintroduce <wbemuuid.h> 时与 SDK 的符号撞名。
+// ============================================================================
 static const CLSID kCLSID_WbemLocator =
     {0x4590F811, 0x1D3A, 0x11D0,
      {0x89, 0x1F, 0x00, 0xAA, 0x00, 0x4B, 0x2E, 0x24}};
-static const IID   kIID_IWbemLocator =
+
+static const IID kIID_IWbemLocator =
     {0xDC12A687, 0x737F, 0x11CF,
      {0x88, 0x4D, 0x00, 0xAA, 0x00, 0x4B, 0x2E, 0x24}};
+
+static const IID kIID_IWbemServices =
+    {0x9556DC99, 0x828C, 0x11CF,
+     {0xA3, 0x7E, 0x00, 0xAA, 0x00, 0x32, 0x40, 0xC7}};
+
+static const IID kIID_IEnumWbemClassObject =
+    {0x027947E1, 0xD731, 0x11CE,
+     {0xA3, 0x57, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}};
 
 namespace hwid {
 
@@ -192,7 +201,8 @@ struct FakeEnum : IEnumWbemClassObject {
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
-        if (riid == IID_IUnknown || riid == IID_IEnumWbemClassObject) {
+        // 本地常量，避免 wbemuuid.lib 缺失时 LNK2019
+        if (riid == IID_IUnknown || riid == kIID_IEnumWbemClassObject) {
             *ppv = static_cast<IEnumWbemClassObject*>(this); AddRef(); return S_OK;
         }
         return real_->QueryInterface(riid, ppv);
@@ -230,7 +240,7 @@ struct FakeWbemServices : IWbemServices {
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
-        if (riid == IID_IUnknown || riid == IID_IWbemServices) {
+        if (riid == IID_IUnknown || riid == kIID_IWbemServices) {
             *ppv = static_cast<IWbemServices*>(this); AddRef(); return S_OK;
         }
         return real_->QueryInterface(riid, ppv);
@@ -298,7 +308,7 @@ struct FakeWbemLocator : IWbemLocator {
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
-        if (riid == IID_IUnknown || riid == IID_IWbemLocator) {
+        if (riid == IID_IUnknown || riid == kIID_IWbemLocator) {
             *ppv = static_cast<IWbemLocator*>(this); AddRef(); return S_OK;
         }
         return real_->QueryInterface(riid, ppv);
@@ -325,8 +335,7 @@ HRESULT STDAPICALLTYPE HookCoCreateInstance(
     if (FAILED(hr) || !ppv || !*ppv) return hr;
 
     // Only wrap the WBEM locator when the caller asked for it.
-    // 这里用本地定义的 kCLSID_WbemLocator / kIID_IWbemLocator，而不是
-    // <wbemuuid.h> 里的 CLSID_WbemLocator / IID_IWbemLocator —— 见文件顶部说明。
+    // 用本地常量，避免依赖 wbemuuid.lib。
     if (IsEqualCLSID(rclsid, kCLSID_WbemLocator) &&
         IsEqualIID(riid, kIID_IWbemLocator) && ppv && *ppv) {
         auto realLoc = static_cast<IWbemLocator*>(*ppv);
