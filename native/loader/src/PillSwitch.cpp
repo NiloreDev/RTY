@@ -1,6 +1,5 @@
 #include "PillSwitch.h"
 
-#include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPropertyAnimation>

@@ -14,7 +14,7 @@ namespace {
 
 std::wstring format_error(const wchar_t* what, unsigned long code) {
     wchar_t buf[256];
-    _snwprintf_s(buf, 256, _TRUNCATE, L"%ls (error %lu)", what, code);
+    _snwprintf_s(buf, _TRUNCATE, L"%ls (error %lu)", what, code);
     return std::wstring(buf);
 }
 

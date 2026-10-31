@@ -6,7 +6,6 @@
 class QLabel;
 class QPushButton;
 class QPropertyAnimation;
-class QVariantAnimation;
 
 namespace loader {
 
@@ -14,15 +13,11 @@ namespace loader {
 // hosts PID / title labels and an Inject button on the right. Hover
 // transitions are driven by a QPropertyAnimation on hoverIntensity_; the
 // row's own entrance is driven by entrance_ (opacity * vertical offset).
-// phase_ drives the flowing background; injectGlow_ is the green pulse
-// played once an injection succeeds.
 class InstanceRow : public QFrame {
     Q_OBJECT
     Q_PROPERTY(qreal hoverIntensity READ hoverIntensity WRITE setHoverIntensity)
     Q_PROPERTY(qreal entrance       READ entrance       WRITE setEntrance)
-    Q_PROPERTY(qreal highlight      READ highlight      WRITE setHighlight)
-    Q_PROPERTY(qreal phase          READ phase          WRITE setPhase)
-    Q_PROPERTY(qreal injectGlow     READ injectGlow     WRITE setInjectGlow)
+    Q_PROPERTY(qreal highlight       READ highlight       WRITE setHighlight)
 
 public:
     InstanceRow(unsigned long pid, const QString& title, const QString& commandLine,
@@ -33,6 +28,11 @@ public:
     const QString& title() const { return title_; }
     void updateTitle(const QString& title);
 
+    // Green "Native Bypass Injected" tag after the title. Kept on the row (and
+    // reapplied when the list rebuilds) so "did Native Bypass fire?" is answerable
+    // at a glance.
+    void setNativeBypassed(bool on);
+
     qreal hoverIntensity() const { return hoverIntensity_; }
     void  setHoverIntensity(qreal v) { hoverIntensity_ = v; update(); }
 
@@ -42,14 +42,10 @@ public:
     qreal highlight() const { return highlight_; }
     void  setHighlight(qreal v) { highlight_ = v; update(); }
 
-    qreal phase() const { return phase_; }
-    void  setPhase(qreal v) { phase_ = v; update(); }
-
-    qreal injectGlow() const { return injectGlow_; }
-    void  setInjectGlow(qreal v) { injectGlow_ = v; update(); }
-
-    void playInjectAnimation();
+    // Flash a yellow outline ring around the row (drawn in paintEvent while
+    // highlight_ fades in/out).
     void flashHighlight();
+
     void playEntrance();
 
 signals:
@@ -68,18 +64,15 @@ private:
     QString       commandLine_;
     QLabel*       pidLabel_   = nullptr;
     QLabel*       titleLabel_ = nullptr;
+    QLabel*       nativeBadge_ = nullptr;
     QPushButton*  injectBtn_  = nullptr;
 
     qreal hoverIntensity_ = 0.0;  // 0..1, drives background tint
     qreal entrance_       = 1.0;  // 0..1, drives opacity + slide-in offset
     qreal highlight_      = 0.0;  // 0..1, drives yellow indicator strength
-    qreal phase_          = 0.0;  // 0..1, flowing background phase
-    qreal injectGlow_     = 0.0;  // 0..1, green pulse after successful inject
 
-    QVariantAnimation*  phaseAnim_  = nullptr;
-    QPropertyAnimation* hoverAnim_  = nullptr;
-    QPropertyAnimation* injectAnim_ = nullptr;
-    // highlightAnim_ removed — never constructed, never used.
+    QPropertyAnimation* hoverAnim_     = nullptr;
+    QPropertyAnimation* highlightAnim_ = nullptr;
 };
 
 } // namespace loader

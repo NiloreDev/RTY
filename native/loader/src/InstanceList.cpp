@@ -1,15 +1,8 @@
-// =====================================================================
-//  InstanceList.cpp
-// =====================================================================
 #include "InstanceList.h"
 
 #include "InstanceRow.h"
-#include "loader.h"
 
-#include <QEasingCurve>
-#include <QGraphicsOpacityEffect>
 #include <QLabel>
-#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSet>
@@ -30,32 +23,19 @@ InstanceList::InstanceList(QWidget* parent)
     scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     scroll_->setStyleSheet(QStringLiteral(
         "QScrollArea { background: transparent; border: none; }"
-
         "QScrollBar:vertical {"
-        "  background: transparent;"
-        "  width: 8px;"
-        "  margin: 4px 1px;"
+        "  background: transparent; width: 8px; margin: 4px 1px;"
         "}"
         "QScrollBar::handle:vertical {"
-        "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
-        "      stop:0 rgba(178, 148, 255, 150),"
-        "      stop:1 rgba(255, 147, 204, 120));"
-        "  border-radius: 4px;"
-        "  min-height: 28px;"
+        "  background: #3a3d45; border-radius: 4px; min-height: 28px;"
         "}"
-        "QScrollBar::handle:vertical:hover {"
-        "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
-        "      stop:0 rgba(200, 170, 255, 210),"
-        "      stop:1 rgba(255, 170, 220, 190));"
-        "}"
-        "QScrollBar::add-line:vertical,"
-        "QScrollBar::sub-line:vertical { height: 0; }"
-        "QScrollBar::add-page:vertical,"
-        "QScrollBar::sub-page:vertical { background: transparent; }"));
+        "QScrollBar::handle:vertical:hover { background: #4a4e58; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
+        "  height: 0;"
+        "}"));
 
     container_ = new QWidget(scroll_);
     container_->setObjectName("instanceContainer");
-    container_->setAttribute(Qt::WA_TranslucentBackground);
     container_->setStyleSheet(QStringLiteral(
         "#instanceContainer { background: transparent; }"));
 
@@ -63,48 +43,28 @@ InstanceList::InstanceList(QWidget* parent)
     containerLayout_->setContentsMargins(2, 2, 2, 2);
     containerLayout_->setSpacing(0);
 
-    // 支持环境说明 —— 换成与卡片同系的浅紫文字
+    // Small note under the section title, before any instance rows: pins the
+    // supported environment so users don't file bug reports for 1.21+ or
+    // Java 21 games.
     note_ = new QLabel(
         QStringLiteral("Minecraft 1.20.1 · Forge 47.4.20 · JDK 17"),
         container_);
     note_->setAlignment(Qt::AlignLeft);
     note_->setStyleSheet(QStringLiteral(
-        "color: rgba(185, 168, 220, 170);"
-        "font-size: 11px;"
-        "letter-spacing: 0.6px;"
-        "padding: 0 10px 10px 10px;"));
+        "color: #5c626e; font-size: 11px; padding: 0 10px 10px 10px;"));
     containerLayout_->addWidget(note_);
 
-    // 空状态文字 —— 换成更柔和的浅紫，并加呼吸脉冲
     emptyLabel_ = new QLabel(
         QStringLiteral("No Minecraft instances detected.\n"
                        "Start the game and it will show up here."),
         container_);
     emptyLabel_->setAlignment(Qt::AlignCenter);
     emptyLabel_->setStyleSheet(QStringLiteral(
-        "color: rgba(190, 178, 220, 200);"
-        "font-size: 12px;"
-        "font-style: italic;"
-        "letter-spacing: 0.4px;"
+        "color: #6a6f7a; font-size: 12px; font-style: italic;"
         "padding: 40px 12px;"));
     containerLayout_->addWidget(emptyLabel_);
 
-    // 空状态呼吸动画：透明度在 0.5 ↔ 1.0 之间缓慢循环
-    {
-        auto* effect = new QGraphicsOpacityEffect(emptyLabel_);
-        effect->setOpacity(1.0);
-        emptyLabel_->setGraphicsEffect(effect);
-
-        auto* pulse = new QPropertyAnimation(effect, "opacity", this);
-        pulse->setDuration(2400);
-        pulse->setStartValue(0.5);
-        pulse->setKeyValueAt(0.5, 1.0);
-        pulse->setEndValue(0.5);
-        pulse->setEasingCurve(QEasingCurve::InOutSine);
-        pulse->setLoopCount(-1);
-        pulse->start();
-    }
-
+    // Stretch keeps rows aligned to the top of the scroll viewport.
     containerLayout_->addStretch(1);
 
     scroll_->setWidget(container_);
@@ -114,12 +74,12 @@ InstanceList::InstanceList(QWidget* parent)
 }
 
 void InstanceList::setInstances(const QVector<Instance>& list) {
-    // 计算传入的 pid 集合
+    // Compute incoming pid set.
     QSet<unsigned long> incoming;
     incoming.reserve(list.size());
     for (const auto& it : list) incoming.insert(it.pid);
 
-    // 移除已消失的行
+    // Remove rows no longer present.
     QList<unsigned long> toRemove;
     toRemove.reserve(rows_.size());
     for (auto it = rows_.constBegin(); it != rows_.constEnd(); ++it) {
@@ -129,9 +89,13 @@ void InstanceList::setInstances(const QVector<Instance>& list) {
         InstanceRow* r = rows_.take(pid);
         containerLayout_->removeWidget(r);
         r->deleteLater();
+        // Windows recycles pids; dropping the flag with the row keeps the badge
+        // from showing up on an unrelated process later.
+        nativeBypassed_.remove(pid);
     }
 
-    // 索引 0 是 note，所以行从 1 开始
+    // Note is index 0; rows start at index 1 so they sit below the note and
+    // the empty label / stretch are at the end.
     for (int i = 0; i < list.size(); ++i) {
         const auto& it = list[i];
         InstanceRow* r = rows_.value(it.pid, nullptr);
@@ -142,6 +106,7 @@ void InstanceList::setInstances(const QVector<Instance>& list) {
             rows_.insert(it.pid, r);
             containerLayout_->insertWidget(i + 1, r);
             r->playEntrance();
+            if (nativeBypassed_.contains(it.pid)) r->setNativeBypassed(true);
         } else {
             r->updateTitle(it.title);
             int currentIndex = containerLayout_->indexOf(r);
@@ -152,13 +117,14 @@ void InstanceList::setInstances(const QVector<Instance>& list) {
         }
     }
 
-    setInteractive(interactive_);
+    setInteractive(interactive_);  // re-apply enabled state on new rows
     updateEmptyState();
 }
 
 void InstanceList::setInteractive(bool on) {
     interactive_ = on;
     for (auto* r : rows_) {
+        // The Inject button is the only interactive child we care about.
         if (auto* btn = r->findChild<QPushButton*>()) {
             btn->setEnabled(on);
         }
@@ -168,6 +134,13 @@ void InstanceList::setInteractive(bool on) {
 void InstanceList::markInjected(unsigned long pid) {
     if (auto* r = rows_.value(pid, nullptr)) {
         r->flashHighlight();
+    }
+}
+
+void InstanceList::markNativeBypassed(unsigned long pid) {
+    nativeBypassed_.insert(pid);
+    if (auto* r = rows_.value(pid, nullptr)) {
+        r->setNativeBypassed(true);
     }
 }
 

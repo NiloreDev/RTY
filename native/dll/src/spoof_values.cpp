@@ -93,7 +93,7 @@ SpoofValues build() {
 
     // Per-device values. A real box never reports the same serial for the
     // BIOS, the board and the disk, and each class has its own shape.
-     v.product_uuid    = guid_string(true);   // 真实 Win32_ComputerSystemProduct.UUID 带 {}
+    v.product_uuid    = guid_string(false);
     v.system_serial   = alnum(4) + digits(7);
     v.bios_serial     = alnum(3) + digits(7);
     v.baseboard_serial = alnum(2) + digits(8);

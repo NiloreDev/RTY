@@ -8,7 +8,7 @@ namespace loader::dbg {
 void installAutoQuit(QObject* parent) {
     auto* t = new QTimer(parent);
     QObject::connect(t, &QTimer::timeout,
-                     QCoreApplication::instance(), &QCoreApplication::quit);
+                     qApp, &QCoreApplication::quit);
     t->setSingleShot(true);
     t->start(1200);
 }

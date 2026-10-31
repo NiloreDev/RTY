@@ -1,7 +1,6 @@
 #include "SettingsPage.h"
 
 #include "PillSwitch.h"
-#include "hwid_spoof_settings.h"     // ← 新增
 #include "loader_settings.h"
 
 #include <QFrame>
@@ -34,10 +33,6 @@ SettingsPage::SettingsPage(QWidget* parent)
         : QWidget(parent) {
     setStyleSheet(QString::fromUtf8(kSettingsQss));
     buildUi();
-
-    // 启动时把持久化的设置一次性灌进 hwidspoof::g_config，
-    // 否则拦截路径拿到的永远是最初的默认值。
-    apply_hwid_spoof();
 }
 
 bool SettingsPage::hwidSpoofEnabled() const {
@@ -83,7 +78,6 @@ void SettingsPage::buildUi() {
     hwidSwitch_->setChecked(loader_settings::is_hwid_spoof_enabled());
     connect(hwidSwitch_, &PillSwitch::toggled, this, [](bool on) {
         loader_settings::save_value(loader_settings::kKeyHwidSpoof(), on);
-        apply_hwid_spoof();      // ← 关键：立刻把开关写进 hwidspoof::g_config
     });
     col->addWidget(makeToggleRow(
         QStringLiteral("HWID Spoof"),
@@ -91,7 +85,10 @@ void SettingsPage::buildUi() {
                        "serial, MAC, computer name). Default OFF."),
         hwidSwitch_, this));
 
-    // Native Bypass
+    // Native Bypass: instead of attaching to the running instance, restart it from
+    // its own command line with CREATE_SUSPENDED, map the DLL in while the main
+    // thread is still frozen, then resume. Nothing the game loads afterwards
+    // (an anti-cheat's loader included) can run before the DLL is resident.
     nativeBypassSwitch_ = new PillSwitch(this);
     nativeBypassSwitch_->setChecked(loader_settings::is_native_bypass_enabled());
     connect(nativeBypassSwitch_, &PillSwitch::toggled, this, [](bool on) {

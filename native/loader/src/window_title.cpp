@@ -21,16 +21,9 @@ namespace {
 
         int len = GetWindowTextLengthW(hwnd);
         if (len <= 0) return TRUE;
-
-        // GetWindowTextLengthW returns the length WITHOUT the terminating null.
-        // GetWindowTextW writes at most cchTextMax wide chars INCLUDING the
-        // terminator, so the buffer must be len + 1. The previous version sized
-        // the string at exactly len and passed len + 1, which made every titled
-        // window write one wchar past the end of the heap allocation.
-        std::wstring title(static_cast<size_t>(len) + 1, L'\0');
-        int copied = GetWindowTextW(hwnd, title.data(), len + 1);
-        if (copied <= 0) return TRUE;
-        title.resize(static_cast<size_t>(copied));
+        std::wstring title(len, L'\0');
+        GetWindowTextW(hwnd, title.data(), len + 1);
+        title.resize(len);
 
         // Prefer the longest title - usually the main Minecraft window which
         // includes version/world name vs a tiny "Java" tooltip window.

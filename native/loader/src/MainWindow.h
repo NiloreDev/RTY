@@ -1,14 +1,13 @@
 #pragma once
 
 #include <QMainWindow>
-#include <QPointF>
 #include <QSet>
-#include <QVariantAnimation>
+#include <QString>
 
-#include "loader.h"        // struct JavaProcess
+#include "InstanceList.h"   // struct Instance, used by maybeAutoInject()
+#include "loader.h"         // struct JavaProcess, same
 
 class QLabel;
-class QPushButton;
 class QSystemTrayIcon;
 class QTimer;
 
@@ -21,21 +20,21 @@ class SettingsPage;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
-
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+    // Called after the splash finishes; plays the entrance animation.
     void playEntrance();
+
+    // Fade the window out, then quit the application. Idempotent: a second
+    // call while a fade is already in flight is a no-op. Used by both the
+    // close button and the "injection finished" path so the loader always
+    // exits with a soft fade instead of vanishing.
     void playExitThenQuit();
 
 private slots:
-    void refreshNow(bool animate = false);
-    void onInjectRequested(unsigned long pid, const QString& title,
-                           const QString& commandLine);
-
-    // 侧边栏页面切换
-    void showInjectPage();
-    void showSettingsPage();
+    void refreshNow();
+    void onInjectRequested(unsigned long pid, const QString& title, const QString& commandLine);
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -46,51 +45,33 @@ private:
     void buildUi();
     void styleApp();
     void enableWin11RoundedCorners();
-    void animateRefreshButton();
-    void scheduleNextMeteor();
-    void launchMeteor();
 
-    // Early Mode 自动注入: 检测到尚未处理的 Minecraft java 进程就立刻注入。
-    // 驱动信号来自原始 java 进程列表(命令行), 而不是窗口列表 —— 窗口要等
-    // Forge/mod 加载完才出来, 那已经太晚。
+    // Native Bypass auto-injection: fires for a Minecraft java process the loader
+    // has not handled yet. Deliberately driven off the raw java process list and
+    // its command line, NOT off the windowed instance list: the window only shows
+    // up after Forge/mod loading, which is far too late to be "early". Pids we
+    // created ourselves (and the ones already handled) are remembered so a
+    // restart cannot feed itself back into another restart.
     void maybeAutoInject(const std::vector<JavaProcess>& procs);
 
-    // 托盘气泡: overlay 只活几秒, 没有这个用户容易错过注入结果。
+    // Tray balloon for the injection result. The overlay only lives a couple of
+    // seconds, so without this the outcome is easy to miss - which is exactly
+    // how "I never saw Native Bypass do anything" happens.
     void notify(const QString& title, const QString& body);
 
-    TitleBar*     titleBar_ = nullptr;
-    InstanceList* list_     = nullptr;
-    QTimer*       timer_    = nullptr;
-    QLabel*       status_   = nullptr;
-    QLabel*       hint_     = nullptr;
-    QPushButton*  refreshButton_    = nullptr;
-    QPushButton*  autoInjectButton_ = nullptr;
+    TitleBar*        titleBar_ = nullptr;
+    InstanceList*    list_     = nullptr;
+    Sidebar*         sidebar_  = nullptr;
+    SettingsPage*    settingsPage_ = nullptr;
+    QTimer*          timer_    = nullptr;
+    QLabel*          status_   = nullptr;
+    QLabel*          hint_     = nullptr;
 
-    // 侧边栏 + 页面
-    Sidebar*      sidebar_      = nullptr;
-    SettingsPage* settingsPage_ = nullptr;
-    QWidget*      injectPage_   = nullptr;
-
-    qreal backgroundPhase_ = 0.0;
-
-    bool          autoInject_       = false;
-    unsigned long lastInjectedPid_  = 0;
     bool entrancePlayed_    = false;
     bool injectionInFlight_ = false;
     bool exiting_           = false;
-
-    // Early Mode: 已经处理过的 pid (含我们自己重启产生的), 防止自喂。
     QSet<unsigned long> earlyHandled_;
-    QSystemTrayIcon*    tray_ = nullptr;
-
-    // 流星状态
-    QVariantAnimation* meteorAnim_ = nullptr;
-    qreal              meteorProgress_ = -1.0;
-    QPointF            meteorStart_;
-    QPointF            meteorEnd_;
-
-    // 黑洞吸积盘旋转相位
-    qreal blackHoleSpin_ = 0.0;
+    QSystemTrayIcon* tray_ = nullptr;
 };
 
 } // namespace loader
