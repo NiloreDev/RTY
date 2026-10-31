@@ -174,10 +174,7 @@ public class AimAssist extends Module {
 
     @Override
     public String getSuffix() {
-        // 显示随机偏移量，保留一位小数
-        float y = randomYawOffset.getValue().floatValue();
-        float p = randomPitchOffset.getValue().floatValue();
-        return String.format("§7[Y:%.1f P:%.1f]", y, p);
+        return this.isEnabled() ? "Adaptive" : "";
     }
 
     @Override
