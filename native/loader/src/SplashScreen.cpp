@@ -209,7 +209,7 @@ void SplashScreen::paintEvent(QPaintEvent*) {
         p.fillRect(r, bg);
     }
 
-    // 极光 (加入色相偏移)
+    // 极光 (在这里加入了 float 强转修复 C4305)
     {
         const qreal t = time_;
         qreal hueShift = std::fmod(t * 0.05, 1.0);
@@ -218,9 +218,10 @@ void SplashScreen::paintEvent(QPaintEvent*) {
             QColor inner = base; g.setColorAt(0.0, inner); inner.setAlpha(0); g.setColorAt(1.0, inner);
             p.fillRect(r, g);
         };
-        blob(r.center() + QPointF(std::cos(t * 0.55) * r.width() * 0.30, std::sin(t * 0.83) * r.height() * 0.34), r.width() * 0.55, QColor::fromHsvF(hueShift, 0.8, 1.0, 0.32));
-        blob(r.center() + QPointF(std::cos(-t * 0.47 + 2.1) * r.width() * 0.34, std::sin(-t * 0.61 + 1.3) * r.height() * 0.38), r.width() * 0.50, QColor::fromHsvF(std::fmod(hueShift + 0.3, 1.0), 0.8, 1.0, 0.27));
-        blob(r.center() + QPointF(std::cos(t * 0.71 + 4.0) * r.width() * 0.36, std::sin(t * 0.39 + 3.0) * r.height() * 0.42), r.width() * 0.44, QColor::fromHsvF(std::fmod(hueShift + 0.6, 1.0), 0.8, 1.0, 0.2));
+        
+        blob(r.center() + QPointF((float)std::cos(t * 0.55) * r.width() * 0.30, (float)std::sin(t * 0.83) * r.height() * 0.34), r.width() * 0.55, QColor::fromHsvF(hueShift, 0.8, 1.0, 0.32));
+        blob(r.center() + QPointF((float)std::cos(-t * 0.47 + 2.1) * r.width() * 0.34, (float)std::sin(-t * 0.61 + 1.3) * r.height() * 0.38), r.width() * 0.50, QColor::fromHsvF(std::fmod(hueShift + 0.3, 1.0), 0.8, 1.0, 0.27));
+        blob(r.center() + QPointF((float)std::cos(t * 0.71 + 4.0) * r.width() * 0.36, (float)std::sin(t * 0.39 + 3.0) * r.height() * 0.42), r.width() * 0.44, QColor::fromHsvF(std::fmod(hueShift + 0.6, 1.0), 0.8, 1.0, 0.2));
     }
 
     // 网格
