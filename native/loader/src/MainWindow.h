@@ -62,16 +62,112 @@ public:
 };
 
 // ==============================================================================
-// 2. 核心引擎前向声明 (具体实现全在 MainWindow.cpp 中)
+// 2. 核心粒子系统类声明 (解决 C2027 报错的关键)
 // ==============================================================================
-class ParticleEngine3D;
-class AtmosphereEngine;
-class TerrainGridEngine;
-class LightningEngine;
-class PostProcessEngine;
+enum class ParticleType { Dust, Spark };
+
+struct Particle3D {
+    Vector2D position, velocity;
+    float z;          
+    float baseRadius, currentRadius;
+    float baseAlpha, currentAlpha;
+    float life, maxLife;
+    float hue;
+    ParticleType type;
+    int pulsePhase;
+};
+
+class ParticleEngine3D {
+public:
+    ParticleEngine3D();
+    ~ParticleEngine3D();
+    void initialize(int w, int h);
+    void resize(int w, int h);
+    void spawnSpark(const Vector2D& pos);
+    void update(float dt, const Vector2D& mousePos);
+    void render(QPainter& painter, float time);
+private:
+    void spawnParticle(bool spreadRandom);
+    void updateZScale(Particle3D& p);
+    void drawNeuralNetwork(QPainter& painter, float time);
+    QVector<Particle3D> m_particles;
+    int m_width, m_height, m_maxParticles;
+};
 
 // ==============================================================================
-// 3. 主窗口 (MainWindow)
+// 3. 大气与气象引擎类声明
+// ==============================================================================
+struct AuroraWave { float frequency, amplitude, speed, phase; QColor color; };
+struct Meteor { Vector2D current, direction; float speed, length, alpha, thickness; };
+struct MatrixDrop { float x, y, speed, length; QString text; };
+
+class AtmosphereEngine {
+public:
+    AtmosphereEngine();
+    ~AtmosphereEngine();
+    void initialize(int w, int h);
+    void update(float dt);
+    void renderBackground(QPainter& painter, float time);
+    void renderForeground(QPainter& painter, float time);
+private:
+    QVector<AuroraWave> m_auroras;
+    QVector<Meteor> m_meteors;
+    QVector<MatrixDrop> m_matrix;
+    int m_width, m_height;
+    float m_meteorTimer;
+};
+
+// ==============================================================================
+// 4. 三维地形网格类声明
+// ==============================================================================
+class TerrainGridEngine {
+public:
+    TerrainGridEngine();
+    void initialize(int w, int h);
+    void triggerRipple(float x, float y);
+    void update(float dt);
+    void render(QPainter& painter, float time);
+private:
+    int m_width, m_height;
+    float m_rippleX, m_rippleY, m_mouseRippleZ;
+};
+
+// ==============================================================================
+// 5. 分形闪电类声明
+// ==============================================================================
+struct LightningBolt {
+    QVector<QPointF> points;
+    float alpha, life;
+};
+
+class LightningEngine {
+public:
+    LightningEngine();
+    void trigger(float startX, float startY, float endX, float endY);
+    void update(float dt);
+    void render(QPainter& painter);
+private:
+    void generateSegment(QVector<QPointF>& points, QPointF start, QPointF end, int depth);
+    QVector<LightningBolt> m_bolts;
+    float m_timer;
+};
+
+// ==============================================================================
+// 6. 后处理特效类声明
+// ==============================================================================
+class PostProcessEngine {
+public:
+    PostProcessEngine();
+    void triggerGlitch();
+    void update(float dt);
+    void render(QPainter& painter, float time, int w, int h, const Vector2D& mouse, float breath);
+private:
+    float m_glitchTimer;
+    float m_scanlineY;
+};
+
+// ==============================================================================
+// 7. 主窗口
 // ==============================================================================
 class MainWindow : public QMainWindow {
     Q_OBJECT
