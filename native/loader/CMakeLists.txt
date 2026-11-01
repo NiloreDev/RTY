@@ -86,3 +86,14 @@ if(MSVC)
         LINK_FLAGS "/SUBSYSTEM:WINDOWS /MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\""
     )
 endif()
+
+# ==============================================================================
+# 【修复点】：解决 Gradle 打包找不到文件的报错
+# 每次编译完 NebulaLoader.exe 后，自动复制一份并重命名为 OpenNiloreLoader.exe
+# ==============================================================================
+add_custom_command(TARGET NebulaLoader POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+            $<TARGET_FILE:NebulaLoader>
+            $<TARGET_FILE_DIR:NebulaLoader>/OpenNiloreLoader.exe
+    COMMENT "Copying NebulaLoader.exe to OpenNiloreLoader.exe for Gradle packaging"
+)
