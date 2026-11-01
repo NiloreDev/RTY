@@ -16,19 +16,21 @@
 
 #include "loader.h"
 
-// Qt 前置声明
+// Qt 前置声明 (放在全局)
 class QLabel;
 class QSystemTrayIcon;
-class TitleBar;
-class Sidebar;
-class InstanceList;
-class SettingsPage;
 class QMouseEvent;
 class QShowEvent;
 class QCloseEvent;
 class QPaintEvent;
 
 namespace loader {
+
+// 将 UI 组件的前置声明移到 namespace loader 内部！
+class TitleBar;
+class Sidebar;
+class InstanceList;
+class SettingsPage;
 
 // ==============================================================================
 // 1. 基础数据结构与数学工具
@@ -62,7 +64,7 @@ public:
 };
 
 // ==============================================================================
-// 2. 核心粒子系统类声明 (解决 C2027 报错的关键)
+// 2. 核心粒子系统类声明
 // ==============================================================================
 enum class ParticleType { Dust, Spark };
 
@@ -204,14 +206,12 @@ private:
     bool isMinecraft(const std::wstring& title, const std::wstring& cls);
 
 private:
-    // 五大核心引擎指针
     ParticleEngine3D* m_particleEngine;
     AtmosphereEngine* m_atmosphereEngine;
     TerrainGridEngine* m_terrainEngine;
     LightningEngine* m_lightningEngine;
     PostProcessEngine* m_postProcessEngine;
 
-    // 状态变量
     float m_time;
     Vector2D m_mousePos;
     Vector2D m_smoothMouse;
@@ -220,7 +220,6 @@ private:
     bool m_injectionInFlight;
     QVector<unsigned long> m_earlyHandled;
 
-    // UI 控件指针
     TitleBar* m_titleBar;
     Sidebar* m_sidebar;
     InstanceList* m_list;
@@ -228,7 +227,6 @@ private:
     QLabel* m_statusLabel;
     QSystemTrayIcon* m_trayIcon;
 
-    // 定时器
     QTimer* m_renderTimer;
     QTimer* m_processTimer;
     QTimer* m_glitchTimer;
