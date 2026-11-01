@@ -209,7 +209,7 @@ void SplashScreen::paintEvent(QPaintEvent*) {
         p.fillRect(r, bg);
     }
 
-    // 极光 (在这里加入了 float 强转修复 C4305)
+    // 极光 (加入强转修复 C4305)
     {
         const qreal t = time_;
         qreal hueShift = std::fmod(t * 0.05, 1.0);
@@ -280,7 +280,7 @@ void SplashScreen::paintEvent(QPaintEvent*) {
         g.setColorAt(1.00, QColor(80, 130, 245, 0)); p.fillRect(r, g);
     }
 
-    // LOGO 文字 (加入色差故障感)
+    // LOGO 文字
     {
         QFont f(QStringLiteral("Segoe UI"));
         f.setPointSizeF(41.0); f.setBold(true); f.setLetterSpacing(QFont::PercentageSpacing, 103.0);
@@ -314,7 +314,6 @@ void SplashScreen::paintEvent(QPaintEvent*) {
                 p.translate(r.center().x(), baseY); p.scale(logoScale_, logoScale_); p.translate(-r.center().x(), -baseY);
                 p.translate(0.0, (1.0 - a) * 26.0); p.setOpacity(logoOpacity_ * a);
                 
-                // 红蓝色差边缘
                 QPainterPath pRed = gp; pRed.translate(-1.5, 0);
                 QPainterPath pBlue = gp; pBlue.translate(1.5, 0);
                 p.fillPath(pRed, QColor(255, 0, 80, 100));
@@ -372,7 +371,7 @@ void SplashScreen::paintEvent(QPaintEvent*) {
         p.setPen(Qt::NoPen); p.fillRect(r, vg);
     }
 
-    p.restore(); // 取消裁剪
+    p.restore();
 
     // 边框
     {
@@ -381,7 +380,7 @@ void SplashScreen::paintEvent(QPaintEvent*) {
         p.setPen(QPen(QBrush(bg), 1.2)); p.setBrush(Qt::NoBrush); p.drawPath(panelPath);
     }
 
-    p.restore(); // 取消面板缩放
+    p.restore();
 }
 
 } // namespace loader
