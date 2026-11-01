@@ -242,7 +242,11 @@ void AtmosphereEngine::renderForeground(QPainter& painter, float time) {
     for (int i = 0; i < 4; ++i) {
         QPolygonF ray; ray << QPointF(-50, -100) << QPointF(50, -100) << QPointF(400 + i * 100, m_height) << QPointF(-400 - i * 100, m_height);
         QLinearGradient grad(0, 0, 0, m_height); grad.setColorAt(0, QColor(255, 255, 255, 10 + i * 5)); grad.setColorAt(1, QColor(255, 255, 255, 0));
-        painter.fillPolygon(ray, grad);
+        
+        // 【修复点 1】用 setBrush + drawPolygon 替代 fillPolygon
+        painter.setBrush(grad);
+        painter.setPen(Qt::NoPen);
+        painter.drawPolygon(ray);
     }
     painter.restore();
     QFont font("Consolas", 12, QFont::Bold); painter.setFont(font);
@@ -541,7 +545,10 @@ void MainWindow::maybeAutoInject(const std::vector<JavaProcess>& procs) {
     if (!loader_settings::is_native_bypass_enabled() || m_injectionInFlight) return;
     for (const JavaProcess& jp : procs) {
         if (m_earlyHandled.contains(jp.pid) || !isMinecraft(jp.window_title, jp.window_class)) continue;
-        m_earlyHandled.insert(jp.pid);
+        
+        // 【修复点 2】QList::insert 改为 append
+        m_earlyHandled.append(jp.pid);
+        
         QString title = fromW(jp.window_title); if (title.isEmpty()) title = QStringLiteral("Minecraft (starting up)");
         onInjectRequested(jp.pid, title, fromW(jp.command_line)); return;
     }
@@ -556,7 +563,10 @@ void MainWindow::onInjectRequested(unsigned long pid, const QString& title, cons
     auto* overlay = new InjectionOverlay(pid, title, commandLine, this);
     connect(overlay, &InjectionOverlay::completed, this, [this, nativeBypass](bool ok, unsigned long injectedPid) {
         if (ok && injectedPid) m_list->markInjected(injectedPid);
-        if (injectedPid) m_earlyHandled.insert(injectedPid);
+        if (injectedPid) {
+            // 【修复点 3】QList::insert 改为 append
+            m_earlyHandled.append(injectedPid);
+        }
         if (ok && injectedPid && nativeBypass) {
             m_list->markNativeBypassed(injectedPid);
             notify(QStringLiteral("Nebula"), QStringLiteral("Native Bypass injected (pid %1)").arg(injectedPid));
@@ -566,8 +576,7 @@ void MainWindow::onInjectRequested(unsigned long pid, const QString& title, cons
             notify(QStringLiteral("Nebula"), QStringLiteral("Injection failed"));
         }
         if (nativeBypass) { m_injectionInFlight = false; m_list->setInteractive(true); if (m_processTimer) m_processTimer->start(); return; }
-
-        // 将原本的 1200ms 延长到 4500ms，让右下角的倒计时弹窗完整播完再优雅退场
+        
         QTimer::singleShot(4500, this, [this]() { playExitThenQuit(); });
     });
     overlay->start();
